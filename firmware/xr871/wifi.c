@@ -27,7 +27,7 @@
 
 static OS_Mutex_t *core_lock;
 static netif_input_fn sdk_input;
-static uint32_t n_rx, n_tx, n_tx_err;
+static uint32_t n_rx, n_tx, n_tx_err, n_rx_busy;
 
 /* ---- WiFi role worker (portal support) ---------------------------------
  * Mode switches (they reload the net core firmware: net.bin <-> net_ap.bin)
@@ -57,9 +57,17 @@ static err_t bridge_input(struct pbuf *p, struct netif *nif)
 	pbuf_free(p);
 	if (len) {
 		n_rx++;
-		OS_MutexLock(core_lock, OS_WAIT_FOREVER);
-		bridge_wifi_rx(f, len);
-		OS_MutexUnlock(core_lock);
+		/* Never stall this thread: it is the SDK's receive path from
+		 * the net core. While the core lock is held for long (flash
+		 * erase/write of a firmware update) the net core's queue filled
+		 * up, its supplicant stalled and the WPA handshake failed in a
+		 * loop. Wait briefly, then drop the frame (TCP resends). */
+		if (OS_MutexLock(core_lock, 20) == OS_OK) {
+			bridge_wifi_rx(f, len);
+			OS_MutexUnlock(core_lock);
+		} else {
+			n_rx_busy++;
+		}
 	}
 	return ERR_OK;
 }
@@ -339,6 +347,12 @@ int wifi_link_info(int *rssi, int *level, int *chan)
 	*chan = ap.channel;
 	link_dbm = (int8_t)(ap.level < -127 ? -127 : ap.level > 0 ? 0 : ap.level);
 	return 0;
+}
+
+/* frames from the air dropped because the core was busy (> 20 ms) */
+uint32_t wifi_rx_busy(void)
+{
+	return n_rx_busy;
 }
 
 void wifi_stats(uint32_t *rx, uint32_t *tx, uint32_t *tx_err)

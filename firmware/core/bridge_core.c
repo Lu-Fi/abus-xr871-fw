@@ -305,9 +305,15 @@ void bridge_log_capture(const char *line, int len)
 	if (len <= 0)
 		return;
 	/* the core never logs secrets; this guards against future mistakes */
+	/* also WPA handshake debug (hexdumps, key/nonce material) and network
+	 * names: the owner's rule is no SSIDs or keys in any log */
 	if (ci_has(line, len, "psk") || ci_has(line, len, "passw") ||
 	    ci_has(line, len, "passphr") || ci_has(line, len, "pmk") ||
-	    ci_has(line, len, "secret")) {
+	    ci_has(line, len, "secret") || ci_has(line, len, "ssid") ||
+	    ci_has(line, len, "hexdump") || ci_has(line, len, "ptk") ||
+	    ci_has(line, len, "gtk") || ci_has(line, len, "nonce") ||
+	    ci_has(line, len, "kck") || ci_has(line, len, "kek") ||
+	    ci_has(line, len, "key")) {
 		line = withheld;
 		len = sizeof(withheld) - 1;
 	}
