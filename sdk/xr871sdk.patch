@@ -1,0 +1,352 @@
+diff --git a/gcc.mk b/gcc.mk
+index 9f06293..0242b04 100755
+--- a/gcc.mk
++++ b/gcc.mk
+@@ -5,7 +5,7 @@
+ # ----------------------------------------------------------------------------
+ # cross compiler
+ # ----------------------------------------------------------------------------
+-CC_DIR := ~/tools/gcc-arm-none-eabi-4_9-2015q2/bin
++CC_DIR := /usr/bin
+ CC_PREFIX := $(CC_DIR)/arm-none-eabi-
+ 
+ AS      := $(CC_PREFIX)as
+@@ -79,10 +79,10 @@ endif
+ 
+ CC_FLAGS = $(CPU) -c $(DBG_FLAG) -fno-common -fmessage-length=0 \
+ 	-fno-exceptions -ffunction-sections -fdata-sections -fomit-frame-pointer \
+-	-Wall -Werror -Wpointer-arith -Wno-error=unused-function \
++	-Wall -Wno-error -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-implicit-function-declaration -Wpointer-arith -Wno-error=unused-function \
+ 	-MMD -MP $(OPTIMIZE_FLAG)
+ 
+-LD_FLAGS = $(CPU) -Wl,--gc-sections --specs=nano.specs \
++LD_FLAGS = $(CPU) -Wl,--gc-sections --specs=nano.specs --specs=nosys.specs \
+ 	-Wl,-Map=$(basename $@).map,--cref
+ 
+ # config symbols
+diff --git a/include/driver/chip/hal_efuse.h b/include/driver/chip/hal_efuse.h
+index dcb13f7..194118d 100644
+--- a/include/driver/chip/hal_efuse.h
++++ b/include/driver/chip/hal_efuse.h
+@@ -84,6 +84,7 @@ typedef enum {
+ #define HAL_EFUSE_BIT_NUM	(2048)
+ 
+ HAL_Status HAL_EFUSE_Read(uint32_t start_bit, uint32_t bit_num, uint8_t *data);
++void HAL_EFUSE_CacheAll(void);	/* ABUS: read all words once, early */
+ HAL_Status HAL_EFUSE_Write(uint32_t start_bit, uint32_t bit_num, uint8_t *data);
+ 
+ #ifdef __cplusplus
+diff --git a/include/net/lwip-1.4.1/lwip/sockets.h b/include/net/lwip-1.4.1/lwip/sockets.h
+index 794c9b1..6486117 100755
+--- a/include/net/lwip-1.4.1/lwip/sockets.h
++++ b/include/net/lwip-1.4.1/lwip/sockets.h
+@@ -323,6 +323,8 @@ typedef struct ip_mreq {
+ #undef FD_ISSET
+ #undef FD_ZERO
+ #undef fd_set
++/* newer newlib declares a real 'struct fd_set'; keep lwIP's own type apart */
++#define fd_set lwip_fd_set
+ #endif /* LWIP_XR_IMPL */
+ 
+ /* FD_SET used for lwip_select */
+diff --git a/include/net/lwip-2.0.3/lwip/sockets.h b/include/net/lwip-2.0.3/lwip/sockets.h
+index 11fda63..8b456e7 100755
+--- a/include/net/lwip-2.0.3/lwip/sockets.h
++++ b/include/net/lwip-2.0.3/lwip/sockets.h
+@@ -412,6 +412,8 @@ typedef struct ip_mreq {
+ #undef FD_ISSET
+ #undef FD_ZERO
+ #undef fd_set
++/* newer newlib declares a real 'struct fd_set'; keep lwIP's own type apart */
++#define fd_set lwip_fd_set
+ #endif /* LWIP_XR_IMPL */
+ 
+ /* FD_SET used for lwip_select */
+diff --git a/project/common/framework/sysinfo.c b/project/common/framework/sysinfo.c
+index 41e0065..4594a66 100644
+--- a/project/common/framework/sysinfo.c
++++ b/project/common/framework/sysinfo.c
+@@ -48,7 +48,7 @@ static fdcm_handle_t *g_fdcm_hdl;
+ 
+ #if PRJCONF_NET_EN
+ 
+-static uint8_t m_sysinfo_mac_addr[] = { 0x00, 0x80, 0xE1, 0x29, 0xE8, 0xD1 };
++static uint8_t m_sysinfo_mac_addr[] = { 0x02, 0x41, 0x42, 0x55, 0x53, 0x01 }; /* ABUS: fixed, locally administered; chip-ID eFuse area unreadable on this board */
+ 
+ static void sysinfo_gen_mac_random(uint8_t mac_addr[6])
+ {
+diff --git a/project/common/startup/gcc/exception.c b/project/common/startup/gcc/exception.c
+index 7b93c65..14265ae 100755
+--- a/project/common/startup/gcc/exception.c
++++ b/project/common/startup/gcc/exception.c
+@@ -112,6 +112,13 @@ static void exception_hex_dump(const uint32_t *addr, uint32_t num)
+  * Arguments  :  pstack:the pointer of stack, PSP before the exception happen.
+  * Returns    :  OK if process CPU exception succeeded, others if failed.
+  */
++/* ABUS: lets the app save the fault into RAM that survives the watchdog reset */
++__attribute__((weak)) void abus_fault_hook(uint32_t *pstack, uint32_t no)
++{
++	(void)pstack;
++	(void)no;
++}
++
+ int32_t exception_entry(uint32_t *pstack, uint32_t *msp, uint32_t *psp)
+ {
+ 	uint32_t i;
+@@ -120,6 +127,8 @@ int32_t exception_entry(uint32_t *pstack, uint32_t *msp, uint32_t *psp)
+ 	uint32_t lr, pc;
+ 	uint32_t len;
+ 
++	abus_fault_hook(pstack, exceptionno);
++
+ 	/* intno can't beyond then 16 */
+ 	//ASSERT(exceptionno < 16);
+ 
+diff --git a/src/driver/chip/hal_efuse.c b/src/driver/chip/hal_efuse.c
+index 33298f2..49b6033 100644
+--- a/src/driver/chip/hal_efuse.c
++++ b/src/driver/chip/hal_efuse.c
+@@ -109,8 +109,13 @@ __STATIC_INLINE void EFUSE_SetTimingParam(EFUSE_TimingParam timingParam)
+ 	EFUSE->TIMING_CTRL = timingParam;
+ }
+ 
++extern uint32_t abus_efuse_cached;
++
+ static HAL_Status EFUSE_Init(void)
+ {
++	if (abus_efuse_cached == 64)	/* served from the early RAM copy */
++		return HAL_OK;
++
+ 	uint32_t clk;
+ 	EFUSE_TimingParam timingParam;
+ 
+@@ -147,6 +152,34 @@ static void EFUSE_ReadData(uint8_t index, uint32_t *pData)
+ 	EFUSE_DisableClkGate();
+ }
+ 
++
++/* ABUS PPIC90520: on this board a software eFuse read is reliable only very
++ * early in SystemInit (where the stock app does its first one); later reads
++ * reset the chip (brown-out-like). So all 64 words are read once there and
++ * every later HAL_EFUSE_Read is served from this RAM copy. Kept in .data
++ * (non-zero initialisers) because SystemInit runs before .bss is cleared. */
++uint32_t abus_efuse_cache[64] = { 0xffffffffU };
++uint32_t abus_efuse_cached = 0xdeadbeefU;	/* words cached, or 0xdeadbeef */
++
++void HAL_EFUSE_CacheAll(void)
++{
++	uint32_t w;
++
++	if (EFUSE_Init() != HAL_OK)
++		return;
++	for (w = 0; w < 64; w++)
++		EFUSE_ReadData((uint8_t)w, &abus_efuse_cache[w]);
++	abus_efuse_cached = 64;
++}
++
++static void EFUSE_ReadWord(uint8_t index, uint32_t *pData)
++{
++	if (abus_efuse_cached == 64)
++		*pData = abus_efuse_cache[index & 63];
++	else
++		EFUSE_ReadData(index, pData);
++}
++
+ /**
+  * @brief Read an amount of data from EFUSE
+  * @param[in] start_bit The first bit to be read on EFUSE
+@@ -200,10 +233,10 @@ HAL_Status HAL_EFUSE_Read(uint32_t start_bit, uint32_t bit_num, uint8_t *data)
+ 	HAL_Memset(data, 0, byte_num);
+ 
+ 	while (byte_cnt > 0) {
+-		EFUSE_ReadData((uint8_t)word_idx, &efuse_word[0]);
++		EFUSE_ReadWord((uint8_t)word_idx, &efuse_word[0]);
+ 
+ 		if (word_idx + 1 < 64) {
+-			EFUSE_ReadData((uint8_t)word_idx + 1, &efuse_word[1]);
++			EFUSE_ReadWord((uint8_t)word_idx + 1, &efuse_word[1]);
+ 		} else {
+ 			efuse_word[1] = 0;
+ 		}
+diff --git a/src/driver/chip/system_chip.c b/src/driver/chip/system_chip.c
+index 9e81d24..e3007ba 100644
+--- a/src/driver/chip/system_chip.c
++++ b/src/driver/chip/system_chip.c
+@@ -30,26 +30,53 @@
+ #include "hal_base.h"
+ #include "driver/chip/system_chip.h"
+ #include "driver/chip/hal_global.h"
++#include "driver/chip/hal_efuse.h"
+ #include "pm/pm.h"
+ 
+ uint32_t SystemCoreClock;
+ extern const unsigned char __RAM_BASE[];	/* SRAM start address */
+ 
++/* ABUS PPIC90520: register values seen at SystemInit (before/after the
++ * adjust), printed by the app for diagnosis. */
++uint32_t abus_efuse_early = 0xdeadbeef;
++uint32_t abus_prcm_dbg[4] = { 0xdeadbeef, 0xdeadbeef, 0xdeadbeef, 0xdeadbeef }; /* .data: not hit by bss clearing */
++
+ __STATIC_INLINE void SystemChipAdjust(void)
+ {
+ #ifdef __CONFIG_CHIP_XR871
+-	if (1) { //(HAL_GlobalGetChipVer() <= 0xB) {
++	/* ABUS test: a real software eFuse read here, where the stock app does
++	 * its first one (chip version, bits 608..609). Result printed later;
++	 * 0xdeadbeef in the print = this line was never reached. */
++	{
++		uint8_t b = 0xee;
++		HAL_Status st;
++
++		HAL_EFUSE_CacheAll();
++		st = HAL_EFUSE_Read(608, 2, &b);
++		abus_efuse_early = ((uint32_t)st << 8) | b;
++	}
++	abus_prcm_dbg[0] = PRCM->DIG_LDO_PARAM;
++	abus_prcm_dbg[1] = PRCM->DCDC_PARAM_CTRL;
++	/* ABUS: back to the stock (SDK 1.3.0) behaviour. SDK 1.4.0 forced the
++	 * DIG_LDO trim unconditionally and rewrote the DCDC bandgap trim from
++	 * eFuse bits; with that, the first software eFuse read reset the chip
++	 * on this board. Stock only sets DIG_LDO for chip version <= 0xB and
++	 * never touches the DCDC trim. */
++	if (HAL_GlobalGetChipVer() <= 0xB) {
+ 		HAL_MODIFY_REG(PRCM->DIG_LDO_PARAM,
+ 		               PRCM_DIG_LDO_BANDGAP_TRIM_MASK,
+ 		               7U << PRCM_DIG_LDO_BANDGAP_TRIM_SHIFT);
+ 	}
+-
++#if 0
+ 	uint8_t val = HAL_GlobalGetSmpsBgtr();
+ 	if (val != 0xff) {
+ 		HAL_MODIFY_REG(PRCM->DCDC_PARAM_CTRL,
+ 		               PRCM_DCDC_BANDGAP_TRIM_MASK,
+ 		               (uint32_t)val << PRCM_DCDC_BANDGAP_TRIM_SHIFT);
+ 	}
++#endif
++	abus_prcm_dbg[2] = PRCM->DIG_LDO_PARAM;
++	abus_prcm_dbg[3] = PRCM->DCDC_PARAM_CTRL;
+ #endif
+ }
+ 
+diff --git a/src/libc/wrap_memmove.c b/src/libc/wrap_memmove.c
+index d7738d7..cf1d0f6 100755
+--- a/src/libc/wrap_memmove.c
++++ b/src/libc/wrap_memmove.c
+@@ -123,7 +123,7 @@ byte_copy:
+ 	return dst0;
+ }
+ 
+-__attribute__ ((__optimize__ ("-O2")))
++__attribute__ ((__optimize__ ("-O2", "no-tree-loop-distribute-patterns")))
+ void *__wrap_memmove(void *dst0, const void *src0, size_t len)
+ {
+ 	uint8_t *dst = (uint8_t *)dst0;
+diff --git a/src/libc/wrap_memset.c b/src/libc/wrap_memset.c
+index 761e452..9d4a9c6 100755
+--- a/src/libc/wrap_memset.c
++++ b/src/libc/wrap_memset.c
+@@ -32,7 +32,7 @@
+ 
+ #define MEM_UNALIGNED(addr)	((uint32_t)(addr) & 0x3)
+ 
+-__attribute__ ((__optimize__ ("-O2")))
++__attribute__ ((__optimize__ ("-O2", "no-tree-loop-distribute-patterns")))
+ void *__wrap_memset(void *s, int c, size_t n)
+ {
+ 	uint8_t *ptr = (uint8_t *)s;
+diff --git a/src/net/wlan/wlan_ctrl.c b/src/net/wlan/wlan_ctrl.c
+index c020b00..e04ad94 100644
+--- a/src/net/wlan/wlan_ctrl.c
++++ b/src/net/wlan/wlan_ctrl.c
+@@ -45,6 +45,19 @@
+ #include "driver/chip/hal_prcm.h"
+ #include "driver/chip/hal_efuse.h"
+ #include "kernel/os/os_semaphore.h"
++#include "driver/chip/hal_uart.h"
++
++/* ABUS diagnostics: flushed boot markers (stdout is a 64-byte polled FIFO,
++ * unflushed lines are lost when the chip resets or hangs) */
++static void wl_mark(const char *fmt, unsigned long a, unsigned long b)
++{
++	printf("boot: wlan: ");
++	printf(fmt, a, b);
++	printf("\n");
++	while (!HAL_UART_IsTxEmpty(HAL_UART_GetInstance(UART0_ID)))
++		;
++}
++#define WL_REG(a) (*(volatile uint32_t *)(a))
+ 
+ int wpa_ctrl_request(wpa_ctrl_cmd_t cmd, void *data)
+ {
+@@ -569,13 +582,25 @@ static int wlan_sys_callback(uint32_t param0, uint32_t param1)
+ 		wlan_sys_power_callback(param1);
+ 		break;
+ #endif
+-	case DUCC_NET_CMD_BIN_READ:
++	case DUCC_NET_CMD_BIN_READ: {
++		int r;
+ 		p = (struct ducc_param_wlan_bin *)param1;
+-		return wlan_get_wlan_bin(p->type, p->index, p->buf, p->len);
++		r = wlan_get_wlan_bin(p->type, p->index, p->buf, p->len);
++		if (p->index == 0 || r != p->len)
++			wl_mark("bin type %lu off/len 0x%lx", (unsigned long)p->type,
++				((unsigned long)p->index << 16) | (unsigned long)p->len);
++		if (r != p->len)
++			wl_mark("bin read returned %ld", (unsigned long)r, (unsigned long)0);
++		return r;
++	}
+ 	case DUCC_NET_CMD_EFUSE_READ:
+ 		efuse = (struct ducc_param_efuse *)param1;
+-		if (HAL_EFUSE_Read(efuse->start_bit, efuse->bit_num, efuse->data) != HAL_OK)
++		if (HAL_EFUSE_Read(efuse->start_bit, efuse->bit_num, efuse->data) != HAL_OK) {
++			wl_mark("efuse req start %lu bits %lu FAILED", efuse->start_bit, efuse->bit_num);
+ 			return -1;
++		}
++		wl_mark("efuse req start %lu bits %lu ok", efuse->start_bit, efuse->bit_num);
++		break;
+ 	default:
+ 		if (m_wlan_net_sys_cb) {
+ 			return m_wlan_net_sys_cb(param0, param1);
+@@ -598,12 +623,16 @@ int wlan_sys_init(enum wlan_mode mode, ducc_cb_func cb,
+ 	OS_SemaphoreCreateBinary(&m_ducc_sync_sem);
+ 
+ #ifndef __CONFIG_ARCH_MEM_PATCH
++	wl_mark("sys2 isolation off, reset release", 0, 0);
+ 	HAL_PRCM_DisableSys2Isolation();
+ 	HAL_PRCM_ReleaseSys2Reset();
+ 	HAL_UDelay(500);
++	wl_mark("sys2 sram clk before 0x%08lx", WL_REG(0xA0040028), 0);
+ 	HAL_PRCM_SetSys2SramClk(PRCM_CPU_CLK_SRC_SYSCLK, PRCM_SYS_CLK_FACTOR_160M);
++	wl_mark("sys2 sram clk after 0x%08lx", WL_REG(0xA0040028), 0);
+ #endif
+ 
++	wl_mark("load net bin mode %lu", (unsigned long)mode, 0);
+ 	if (wlan_load_net_bin(mode) != 0) {
+ 		WLAN_ERR("%s() load net bin failed\n", __func__);
+ #ifndef __CONFIG_ARCH_MEM_PATCH
+@@ -618,8 +647,24 @@ int wlan_sys_init(enum wlan_mode mode, ducc_cb_func cb,
+ 
+ 	uint32_t tmp = *(WLAN_SYS_BOOT_CFG_ADDR); /* backup */
+ 	*(WLAN_SYS_BOOT_CFG_ADDR) = (uint32_t)cfg;
++	wl_mark("net core start", 0, 0);
+ 	HAL_PRCM_ReleaseCPUNReset();
+-	OS_SemaphoreWait(&m_ducc_sync_sem, OS_WAIT_FOREVER);
++	/* ABUS: bounded instead of OS_WAIT_FOREVER - a net core that never
++	 * reports ready must not hang the app (the MCU would power-cycle us) */
++	if (OS_SemaphoreWait(&m_ducc_sync_sem, 5000) != OS_OK) {
++		wl_mark("net core NOT READY after 5 s, prcm 0x84 0x%08lx 0x88 0x%08lx",
++			WL_REG(0x40040084), WL_REG(0x40040088));
++		*(WLAN_SYS_BOOT_CFG_ADDR) = tmp;
++		HAL_PRCM_ForceCPUNReset();
++		ducc_app_stop();
++		OS_SemaphoreDelete(&m_ducc_sync_sem);
++#ifndef __CONFIG_ARCH_MEM_PATCH
++		HAL_PRCM_DisableSys2();
++		HAL_PRCM_DisableSys2Power();
++#endif
++		return -1;
++	}
++	wl_mark("net core ready", 0, 0);
+ 	*(WLAN_SYS_BOOT_CFG_ADDR) = tmp; /* restore */
+ 	OS_SemaphoreDelete(&m_ducc_sync_sem);
+ 	WLAN_DBG("wlan sys init done\n");

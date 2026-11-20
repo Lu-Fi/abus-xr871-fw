@@ -1,0 +1,12 @@
+# private / device data - never commit
+private/
+*.bin
+*.img
+*.dump
+*.axf
+*.map
+# build output
+*.o
+*.d
+firmware/host/xr871-host
+__pycache__/
