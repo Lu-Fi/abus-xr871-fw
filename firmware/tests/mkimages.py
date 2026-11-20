@@ -84,8 +84,14 @@ def main(out):
 
     new = bytearray(b"\xff" * FLASH)
     boot(new, OTA_PRIV)
-    put_chain(new, 0, [(0x8000, APP, rnd(0xA400, 21), 0x10000),
-                       (0x16000, NET, rnd(0x24000, 22), 0x60000000),
+    # the UART frame magic inside the update data: a real image has it
+    # (ap18 at span offset 12852), the receiver must treat it as data
+    app = bytearray(rnd(0xA400, 21))
+    app[0x1234:0x1238] = b"\xaa\x55\xaa\x55"
+    net = bytearray(rnd(0x24000, 22))
+    net[0x777:0x77F] = b"\xaa\x55\xaa\x55" * 2
+    put_chain(new, 0, [(0x8000, APP, bytes(app), 0x10000),
+                       (0x16000, NET, bytes(net), 0x60000000),
                        (0x44000, SDD, rnd(0x2E8, 23), 0xFFFFFFFF)])
     open(os.path.join(out, "new_full.bin"), "wb").write(new)
     end = 0x44000 + 64 + 0x2E8

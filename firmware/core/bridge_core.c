@@ -587,14 +587,22 @@ static void t30_handle(const uint8_t *b, int len)
 void bridge_t30_rx(const uint8_t *in, int n)
 {
 	static uint8_t buf[BR_HDR_LEN + BR_MAX_PAYLOAD];
-	static uint32_t acc;
+	static uint32_t acc, last_ms;
+	uint32_t now = H->millis();
 	int i;
 
+	/* a frame arrives in one burst at 115200 baud (<= 23 ms); a gap
+	 * means bytes were lost: drop the partial frame */
+	if (rx_have >= 0 && now - last_ms > 200)
+		rx_have = -1;
+	last_ms = now;
 	for (i = 0; i < n; i++) {
 		uint8_t c = in[i];
 
 		acc = (acc >> 8) | ((uint32_t)c << 24);
-		if (acc == 0x55aa55aaU) {
+		/* the magic restarts a frame only outside the payload: binary
+		 * payloads (firmware update data) may contain aa 55 aa 55 */
+		if (acc == 0x55aa55aaU && rx_have < BR_HDR_LEN) {
 			buf[0] = 0xaa; buf[1] = 0x55; buf[2] = 0xaa; buf[3] = 0x55;
 			rx_have = 4;
 			continue;
