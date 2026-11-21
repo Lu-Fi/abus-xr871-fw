@@ -26,6 +26,7 @@ debug log: do not paste it anywhere public.
 """
 import argparse
 import json
+import os
 import socket
 import sys
 import time
@@ -178,9 +179,21 @@ def flash(s, path):
     return ok
 
 
+def default_host():
+    h = os.environ.get("UARTMON_HOST")
+    if h:
+        return h
+    try:
+        with open(os.path.expanduser("~/.config/lufi-uartmon/ip")) as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--host", default="192.168.10.183")
+    ap.add_argument("--host", default=default_host(),
+                    help="UART monitor (default: $UARTMON_HOST or ~/.config/lufi-uartmon/ip)")
     ap.add_argument("--ch", default="C", choices=["A", "B", "C"],
                     help="monitor channel that receives the XR871 console")
     ap.add_argument("what", choices=["enter", "cmd", "flash", "boot", "reboot"])

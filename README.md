@@ -4,10 +4,11 @@ Own firmware for the **XRadio XR871** WiFi co-processor of the ABUS PPIC90520
 battery camera, written so the camera can run [Thingino](https://github.com/themactep/thingino-firmware)
 on its Ingenic T30 instead of the vendor firmware.
 
-**Private repository.** Built images contain parts of the vendor firmware
-(bootloader, RF calibration) and the camera stores WiFi credentials in its
-XR871 flash. Never commit flash images, dumps or readbacks. See
-[Private inputs](#private-inputs).
+**Licence:** MIT for the code here; see [LICENSE](LICENSE) and
+[NOTICE](NOTICE) for the XR871 SDK and third-party parts. Built flash images
+contain vendor parts (bootloader, RF calibration from your own dump) and the
+camera stores WiFi credentials in its XR871 flash: never publish flash
+images, dumps or readbacks. See [Private inputs](#private-inputs).
 
 ## The camera
 

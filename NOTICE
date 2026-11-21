@@ -1,0 +1,40 @@
+abus-xr871-fw
+=============
+
+Own code in this repository (firmware/, tools/, scripts/, docs/) is licensed
+under the MIT License, see LICENSE, unless a file states otherwise.
+
+Third-party material
+--------------------
+
+XRadio XR871 SDK (https://github.com/XradioTech/XR871SDK, commit 5dff623)
+  Not included. scripts/setup-sdk.sh downloads it. The application is built
+  against it and links its libraries, so a built application image contains
+  SDK code.
+  - sdk/xr871sdk.patch modifies SDK source files.
+  - sdk/board/ and sdk/project/ are adapted from SDK templates.
+  These keep the original notices:
+    Copyright (C) 2017 XRADIO TECHNOLOGY CO., LTD. All rights reserved.
+    BSD 3-Clause License (see the header of each SDK source file).
+  Code from the SDK that ends up in the application also includes:
+    FreeRTOS (MIT, src/kernel/FreeRTOS/License), lwIP (BSD,
+    src/net/lwip-*/COPYING), mbed TLS (Apache-2.0,
+    src/net/mbedtls-2.2.0/LICENSE) and others; see the SDK for their licence
+    texts. Anyone distributing a built application must ship these notices.
+  The libraries in the SDK that come without source (e.g. libadt,
+  libairkiss_aes, libsc_assistant) are not linked into the application (the
+  linker map shows no code from them).
+
+Not distributed here, never to be committed
+-------------------------------------------
+  - XR871 SDK binaries (bin/xr871/net*.bin, wlan_bl.bin, wlan_fw.bin,
+    boot.bin): no licence statement; fetch them from the SDK yourself.
+  - Bootloader and RF calibration (sdd) of the camera: vendor and per-device
+    data. Each user takes them from their own flash dump (private/).
+  - Complete flash images, dumps and readbacks.
+
+Interoperability data
+---------------------
+  firmware/xr871/main.c contains the 80-byte AXP2601 battery model that the
+  stock camera firmware loads into the fuel gauge. It is included only so the
+  gauge reports correct values on this camera.
