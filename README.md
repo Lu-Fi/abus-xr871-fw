@@ -126,7 +126,7 @@ are only covered by the SDK build.
 
 ## Status
 
-- Running on camera 2 as build `ap21` (2026-11-21; ap17 before): WiFi STA, SPI bridge, standby with
+- Running on camera 2 as build `ap22` (2026-11-21; ap17 before): WiFi STA, SPI bridge, standby with
   wake-ups, battery, LED.
 - `ap18-features` (built, host-tested, not on hardware yet) adds the service
   extensions: status 0xd0, MCU passthrough 0xd1/0xd2, GPIO test 0xd3, XR871 log
