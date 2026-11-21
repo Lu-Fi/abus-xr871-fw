@@ -1,6 +1,6 @@
 # Enabling A/B updates on the XR871 (one clip flash)
 
-Status: host-tested (`run_tests.py` section 3b), **not yet done on hardware**.
+Status: host-tested (`run_tests.py` section 3b) and done on camera 2 on 2026-11-21 (boots image 1, `fwupdate --info` reports OTA enabled). A commit + reboot into image 2 is not yet tested on hardware.
 
 ## Why
 
