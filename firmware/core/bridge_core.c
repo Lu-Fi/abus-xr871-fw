@@ -123,12 +123,19 @@ static void send_status(void)
 
 		memcpy(p + 88, CORE_VERSION, n);
 		if (m) {
-			if (m > BR_STATUS_LEN - 88 - n - 2)
-				m = BR_STATUS_LEN - 88 - n - 2;
+			if (m > BR_STATUS_VER_END - 88 - n - 2)
+				m = BR_STATUS_VER_END - 88 - n - 2;
 			p[88 + n] = ' ';
 			memcpy(p + 89 + n, v, m);
 		}
 	}
+	p[152] = S.t2e >= 0 && S.t2e < 0xffff ? S.t2e & 0xff : 0xff;
+	p[153] = S.t2e >= 0 && S.t2e < 0xffff ? S.t2e >> 8 : 0xff;
+	p[154] = S.t2f >= 0 && S.t2f < 0xffff ? S.t2f & 0xff : 0xff;
+	p[155] = S.t2f >= 0 && S.t2f < 0xffff ? S.t2f >> 8 : 0xff;
+	p[156] = S.chg_restarts & 0xff;
+	p[157] = (S.chg_restarts >> 8) & 0xff;
+	p[158] = S.lowbat_n;
 	t30_send(T30_STATUS, BR_STATUS_VERSION, p, sizeof(p));
 }
 
@@ -767,11 +774,37 @@ void bridge_mcu_rx(uint8_t cmd, uint8_t val)
 
 /* ---- lifecycle -------------------------------------------------------- */
 
+void bridge_battery(int soc, int mv, int t2e, int t2f)
+{
+	if (soc < 0 || soc > 100)
+		return;
+	S.t2e = t2e;
+	S.t2f = t2f;
+	if (S.usb == 1 && S.bat_soc == 100 && soc < 100) {
+		H->log("bat: %d%% on USB after full: charge restart {0x21}\n", soc);
+		mcu_send(MCU_CHARGE, 0);
+		mcu_send(MCU_CHARGE, 1);
+		S.chg_restarts++;
+	}
+	S.bat_soc = soc;
+	S.bat_mv = mv;
+	if (S.usb == 0 && soc < BR_LOWBAT_SOC && mv > 0 && mv < BR_LOWBAT_MAX_MV) {
+		if (S.lowbat_n != 0xff && ++S.lowbat_n >= BR_LOWBAT_READS) {
+			H->log("bat: %d%% %d mV without USB: low power shutdown {0x24}\n", soc, mv);
+			mcu_send(MCU_LOW_POWER, 0);
+			S.lowbat_n = 0xff;
+		}
+	} else if (S.usb == 1 || S.lowbat_n != 0xff) {
+		S.lowbat_n = 0;
+	}
+}
+
 void bridge_init(const struct bridge_hal *hal, uint32_t wake_source)
 {
 	H = hal;
 	memset(&S, 0, sizeof(S));
 	S.usb = -1;
+	S.bat_soc = S.bat_mv = S.t2e = S.t2f = -1;
 	wake_src = wake_source;
 	fwu_init(hal);
 	H->log("abus-xr871 keepalive firmware, milestone 1 (%s%s%s)\n", CORE_VERSION,

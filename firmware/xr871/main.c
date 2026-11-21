@@ -967,6 +967,19 @@ static int axp_model_load(void)
 	return ok ? 0 : -1;
 }
 
+/* AXP2601 0x0a:0x0b time to empty, 0x0c:0x0d time to full (big endian,
+ * minutes, inferred; see work/cam2/fable-stock-re.md). -1 = read failed. */
+static void bat_times(int *t2e, int *t2f)
+{
+	uint8_t b[4];
+
+	*t2e = *t2f = -1;
+	if (diag_i2c_rd(1, AXP_ADDR, 0x0a, b, 4) != 4)
+		return;
+	*t2e = b[0] << 8 | b[1];
+	*t2f = b[2] << 8 | b[3];
+}
+
 static int bat_read(uint16_t *mv, uint8_t *soc, int8_t *t, uint8_t *flags)
 {
 	uint8_t b[2];
@@ -1017,11 +1030,13 @@ static void led_update(void)
 static void bat_report(void)
 {
 	uint16_t mv;
-	uint8_t soc, flags, p[5];
+	uint8_t soc, flags, p[9];
 	int8_t t;
+	int t2e, t2f;
 
 	if (bat_read(&mv, &soc, &t, &flags))
 		return;
+	bat_times(&t2e, &t2f);
 	p[0] = mv & 0xff;
 	p[1] = mv >> 8;
 	p[2] = soc;
@@ -1037,10 +1052,16 @@ static void bat_report(void)
 	led_soc = soc;
 	hal_ext_battery_set(soc, mv);	/* for the status record (0xd0) */
 	p[4] = flags;
+	p[5] = t2e >= 0 ? t2e & 0xff : 0xff;
+	p[6] = t2e >= 0 ? t2e >> 8 : 0xff;
+	p[7] = t2f >= 0 ? t2f & 0xff : 0xff;
+	p[8] = t2f >= 0 ? t2f >> 8 : 0xff;
 	OS_MutexLock(&core_lock, OS_WAIT_FOREVER);
+	bridge_battery(soc, mv, t2e, t2f);	/* charge restart, low-battery shutdown */
 	bridge_t30_send(XR_BATTERY, 0, p, sizeof(p));
 	OS_MutexUnlock(&core_lock);
-	printf("bat: %u mV %u%% %d C%s%s\n", mv, soc, t, (flags & 1) ? " (gauge woken)" : "",
+	printf("bat: %u mV %u%% %d C t2e %d t2f %d%s%s\n", mv, soc, t, t2e, t2f,
+	       (flags & 1) ? " (gauge woken)" : "",
 	       (flags & 8) ? " charging" : (flags & 4) ? " usb" : "");
 }
 

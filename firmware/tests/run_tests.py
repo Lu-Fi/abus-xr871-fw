@@ -209,6 +209,7 @@ def test_e2e(w):
                      "mcu state:      0x1e=0x01 0x1f=0xa5", "t30 power:      on, forwarding mask 0x03",
                      "running image ? (flash not probed"):
             check(f"e2e status shows '{want}'", want in o)
+        check("e2e status: no time-to-empty estimate on USB", "time to empty" not in o, o)
         rc, o = r.c("mcu 0x23 0")
         check("e2e mcu: query sent and MCU reply printed", rc == 0 and "mcu -> {0x23,0x96}" in o, o)
         # MCU sw 150 answers 0x15/0x18/0x1c, but not 0x26/0x29/0x2b/0x2c/0x2f
@@ -340,12 +341,12 @@ def test_boot_usb(w):
         check("boot: hello answered like stock (0x85 wake 4, 0x40, 0x80)",
               [f[0] for f in hello[:3]] == [0x85, 0x40, 0x80] and hello[0][2] == b"\x04\0\0\0", hello)
         f = t.req(0xD0)     # ~0.4 s: before the simulated {0x0c,1} event at 1 s
-        p = f[2] if f else bytes(152)
+        p = f[2] if f else bytes(160)
         check("boot: status has USB = present from {0x1e} before any 0x0c event",
               f and p[84] & 5 == 5 and p[82] == 1 and p[80] == 1 and
               "event 0x0c" not in read(t.log), (p[80:88].hex(), read(t.log)[-200:]))
         check("boot: status version string = core + glue", f and
-              p[88:].rstrip(b"\0").decode() == CORE + " host", p[88:])
+              p[88:152].rstrip(b"\0").decode() == CORE + " host", p[88:152])
         f = t.req(0xC8)     # current command set still dispatched (no WiFi worker on the host)
         check("boot: WiFi scan request answered (refused: host has no wifi_mode hook)",
               f and f[1] == 0xFFFF, f)
@@ -483,7 +484,7 @@ def test_raw(w):
         f = t.req(0xC0, 0, p)
         check("raw wifi config accepted", f and f[1] == 1)
         f = t.req(0xD0)
-        check("raw status reply (152 bytes, version 1)", f and len(f[2]) == 152 and f[2][0] == 1)
+        check("raw status reply (160 bytes, version 1)", f and len(f[2]) == 160 and f[2][0] == 1)
         # log flood: rate limit + drop notice
         for i in range(150):
             t.send(0x77, i)
@@ -656,21 +657,31 @@ def test_slow(w):
         r.stop()
 
 
-def test_rx_loss(w):
-    """core receiver with lost UART bytes (unit test, tests/t30_rx_loss.c)"""
-    exe = os.path.join(w, "t30_rx_loss")
-    src = os.path.join(HERE, "t30_rx_loss.c")
+def unit_test(w, name, label, what):
+    """build and run one C unit test of the core (tests/<name>.c)"""
+    exe = os.path.join(w, name)
+    src = os.path.join(HERE, name + ".c")
     fwd = os.path.join(HERE, "..")
     r = subprocess.run(["cc", "-Wall", "-Wextra", "-I" + fwd, "-o", exe, src,
                         os.path.join(fwd, "core", "bridge_core.c"),
                         os.path.join(fwd, "core", "fw_update.c")],
                        capture_output=True, text=True)
-    check("rx loss: unit test builds without warnings", r.returncode == 0 and not r.stderr.strip(),
+    check(f"{label}: unit test builds without warnings", r.returncode == 0 and not r.stderr.strip(),
           r.stderr[-400:])
     if r.returncode == 0:
         r = subprocess.run([exe], capture_output=True, text=True)
         print(r.stdout, end="")
-        check("rx loss: damaged CRC frames dropped, next frame kept", r.returncode == 0, r.stdout[-400:])
+        check(f"{label}: {what}", r.returncode == 0, r.stdout[-400:])
+
+
+def test_rx_loss(w):
+    """core receiver with lost UART bytes (unit test, tests/t30_rx_loss.c)"""
+    unit_test(w, "t30_rx_loss", "rx loss", "damaged CRC frames dropped, next frame kept")
+
+
+def test_battery(w):
+    """charge restart, low-battery shutdown, status tail (tests/battery.c)"""
+    unit_test(w, "battery", "battery", "charge restart, low-battery shutdown, status tail")
 
 
 def main():
@@ -679,6 +690,7 @@ def main():
     print(f"firmware {FW}\nxr871d   {XD}\nimage.py {TOOL}")
     build(w)
     test_rx_loss(w)
+    test_battery(w)
     test_stock(w)
     test_boot_usb(w)
     test_e2e(w)

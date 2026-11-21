@@ -120,7 +120,8 @@ struct bridge_hal {
 #define BR_E_DENIED 0xfffe
 #define BR_E_FAIL 0xffff
 #define BR_STATUS_VERSION 1
-#define BR_STATUS_LEN 152
+#define BR_STATUS_LEN 160
+#define BR_STATUS_VER_END 152	/* version string ends here, battery tail follows */
 #define BR_LOG_MAX 200		/* longest forwarded line */
 
 /* XR871 -> T30 */
@@ -137,7 +138,8 @@ struct bridge_hal {
 #define XR_SCAN_ENTRY 0xcb
 /* battery (AXP2601 fuel gauge), every 30 s: payload u16 vbat_mv (LE),
  * u8 soc %, s8 temperature deg C, u8 flags (bit0 = gauge was asleep and
- * was woken) */
+ * was woken, bit1 model reloaded, bit2 USB, bit3 charging); since ap22 also
+ * u16 time to empty, u16 time to full (minutes, LE, 0xffff unknown) */
 #define XR_BATTERY 0xcc
 #define XR_PIR 0xcd		/* XR871->T30: PIR motion (param = MCU event value) */
 
@@ -152,7 +154,15 @@ struct bridge_hal {
 #define MCU_EV_KEY2 0x13
 #define MCU_EV_USB 0x0c		/* val != 0: USB power in (stock "USB INSERT") */
 #define MCU_EV_MAINBAT 0x2d	/* main battery in/out */
-#define MCU_LOW_POWER 0x24	/* XR871 -> MCU low-power notice */
+#define MCU_LOW_POWER 0x24	/* XR871 -> MCU low-power shutdown (stock: SOC < 2 %, no USB) */
+#define MCU_CHARGE 0x21		/* {0x21,0} then {0x21,1}: restart charging (stock, inferred) */
+
+/* low-battery shutdown: SOC below BR_LOWBAT_SOC without USB in
+ * BR_LOWBAT_READS readings in a row, and VBAT below BR_LOWBAT_MAX_MV (guards
+ * against a gauge that reads 0 % with a healthy battery) */
+#define BR_LOWBAT_SOC 2
+#define BR_LOWBAT_READS 3
+#define BR_LOWBAT_MAX_MV 3600
 
 /*
  * Sleep: the T30 sends T30_POWER with param 0 (optional payload u32 =
@@ -183,6 +193,10 @@ struct bridge_stats {
 	uint8_t mcu_state1, mcu_state2, mcu_usb, mcu_mainbat;
 	uint8_t mcu_seen;	/* bit0 state1, bit1 state2, bit2 usb, bit3 mainbat */
 	uint32_t log_lines, log_dropped, mcu_events_fwd;
+	int bat_soc, bat_mv;	/* last bridge_battery() reading, -1 = none */
+	int t2e, t2f;		/* AXP2601 time to empty / full, minutes, -1 = unknown */
+	uint32_t chg_restarts;	/* {0x21} charge restarts sent */
+	uint8_t lowbat_n;	/* low readings in a row; 0xff = shutdown sent */
 };
 
 void bridge_init(const struct bridge_hal *hal, uint32_t wake_source);
@@ -191,6 +205,16 @@ void bridge_t30_send(uint8_t cmd, uint16_t param, const void *payload, uint16_t 
 void bridge_t30_rx(const uint8_t *buf, int len);
 void bridge_mcu_rx(uint8_t cmd, uint8_t val);
 void bridge_poll(void);		/* call about every 100 ms */
+/*
+ * One fuel gauge reading (glue, about every 30 s, also while the T30 sleeps):
+ * soc 0..100 (<0 = read failed), mv, t2e/t2f in minutes (<0 = unknown).
+ * - On USB, when SOC drops from 100 to below 100: {0x21,0},{0x21,1} to the
+ *   MCU, like the stock charging timer (restarts charging, inferred).
+ * - Without USB, SOC < BR_LOWBAT_SOC: {0x24,0} low-power shutdown (stock
+ *   "Low power automatic shutdown"), see BR_LOWBAT_*. Sent once; re-armed
+ *   when USB power comes back.
+ */
+void bridge_battery(int soc, int mv, int t2e, int t2f);
 void bridge_wake(uint32_t reason);	/* power the T30 up (no-op if on) */
 /*
  * Power-cycle a running T30 (3 s off). Also done automatically when the T30
@@ -231,6 +255,10 @@ int bridge_gpio_protected(int port, int pin);
  *     4 usb, 8 main battery)   85 u8 running image (0/1, 0xff unknown)
  *  86 u8 OTA enabled (0xff unknown)   87 u8 forwarding mask
  *  88 char[64] version, NUL padded
+ * 152 u16 time to empty, minutes (0xffff unknown; AXP2601 0x0a:0x0b, an
+ *     estimate, meaningless at 100 % or on USB)   154 u16 time to full
+ *     (0x0c:0x0d, 0xffff unknown)   156 u16 charge restarts sent
+ * 158 u8 low-battery readings in a row (0xff = shutdown sent)  159 reserved
  */
 
 #endif

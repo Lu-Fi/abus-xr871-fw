@@ -502,6 +502,7 @@ int main(int argc, char **argv)
 	if (getenv("XR_VERSION"))	/* glue version string, e.g. "ap20 m2" */
 		hal.version = getenv("XR_VERSION");
 	bridge_init(&hal, 4);
+	bridge_battery(77, 3950, 555, -1);	/* like the glue's first gauge reading */
 	mcu_queue(0x0c, 0x01, 1000);	/* USB power present */
 	if (spi >= 0) {
 		spi_arm();
