@@ -370,10 +370,12 @@ void spis_diag(void)
 
 		wifi_link_info(&rssi, &level, &chan);
 		extern uint32_t wifi_rx_busy(void);
+		extern uint32_t t30_rx_overruns(void);
 
-		printf("wifi: air->t30 %lu  t30->air %lu  tx_err %lu  rx_busy %lu  rssi %d level %d ch %d\n",
+		printf("wifi: air->t30 %lu  t30->air %lu  tx_err %lu  rx_busy %lu  t30 rx_ovr %lu  rssi %d level %d ch %d\n",
 		       (unsigned long)wrx, (unsigned long)wtx, (unsigned long)werr,
-		       (unsigned long)wifi_rx_busy(), rssi, level, chan);
+		       (unsigned long)wifi_rx_busy(), (unsigned long)t30_rx_overruns(),
+		       rssi, level, chan);
 	}
 	printf("spis: xfer %lu abort %lu dma rx left %lu tx left %lu | CTRL %08lx TCTRL %08lx"
 	       " STA %08lx FCTL %08lx FST %08lx | ready PA%d=%d pins(mosi,miso,clk,cs) %lx\n",

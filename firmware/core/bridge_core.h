@@ -73,6 +73,7 @@ struct bridge_hal {
 #define BR_MAGIC0 0xaa
 #define BR_MAGIC1 0x55
 #define BR_HDR_LEN 12
+#define BR_FLAG_CRC 0x02	/* byte 7: bytes 8..9 = CRC16 (our xr871d only) */
 #define BR_MAX_PAYLOAD 0xf4
 #define BR_PROBE_MS 300	/* a probed pin falls back to low after this */
 

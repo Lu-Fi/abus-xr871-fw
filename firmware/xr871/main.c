@@ -169,17 +169,58 @@ static struct bridge_hal hal = {
 
 /* ---- threads ---------------------------------------------------------- */
 
+/*
+ * T30 UART receive: interrupt -> ring -> task. HAL_UART_Receive_IT windows
+ * left only the 64-byte hardware FIFO between two calls; while the task
+ * waited for the core lock (frame handling, flash writes) a burst from the
+ * T30 overran it. A frame with lost bytes was then filled up with the
+ * next frame: a corrupted WiFi config made the XR871 rejoin with a wrong
+ * key until reboot (2026-11-21). The ring is drained under the core lock.
+ */
+static uint8_t t30_ring[4096];
+static volatile uint32_t t30_w, t30_r, t30_ovr;
+static OS_Semaphore_t t30_sem;
+
+static void t30_rx_cb(void *arg)
+{
+	UART_T *u = HAL_UART_GetInstance(T30_UART);
+
+	(void)arg;
+	while (HAL_UART_IsRxReady(u)) {
+		uint8_t c = HAL_UART_GetRxData(u);
+		uint32_t n = (t30_w + 1) % sizeof(t30_ring);
+
+		if (n != t30_r) {
+			t30_ring[t30_w] = c;
+			t30_w = n;
+		} else {
+			t30_ovr++;	/* ring full: counted, shown in the status line */
+		}
+	}
+	OS_SemaphoreRelease(&t30_sem);
+}
+
+uint32_t t30_rx_overruns(void)
+{
+	return t30_ovr;
+}
+
 static void t30_task(void *arg)
 {
-	uint8_t buf[64];
-	int32_t n;
+	uint8_t buf[256];
+	int n;
 
 	(void)arg;
 	for (;;) {
-		n = HAL_UART_Receive_IT(T30_UART, buf, sizeof(buf), 50);
+		(void)OS_SemaphoreWait(&t30_sem, 50);
 		OS_MutexLock(&core_lock, OS_WAIT_FOREVER);
-		if (n > 0)
-			bridge_t30_rx(buf, n);
+		do {
+			for (n = 0; n < (int)sizeof(buf) && t30_r != t30_w; n++) {
+				buf[n] = t30_ring[t30_r];
+				t30_r = (t30_r + 1) % sizeof(t30_ring);
+			}
+			bridge_t30_rx(buf, n);	/* n == 0: lets the core see gaps */
+		} while (n == (int)sizeof(buf));
 		bridge_poll();
 		OS_MutexUnlock(&core_lock);
 	}
@@ -1223,6 +1264,9 @@ int main(void)
 	 * fw_update.c) go deeper than the 2 KiB the plain bridge got by with */
 	OS_ThreadCreate(&mcu_thread, "mcu", mcu_task, NULL,
 			OS_THREAD_PRIO_APP, 4 * 1024);
+	if (OS_SemaphoreCreate(&t30_sem, 0, 1000) != OS_OK ||
+	    HAL_UART_EnableRxCallback(T30_UART, t30_rx_cb, NULL) != HAL_OK)
+		printf("boot: t30 rx callback failed\n");
 	OS_ThreadCreate(&t30_thread, "t30", t30_task, NULL,
 			OS_THREAD_PRIO_APP, 4 * 1024);
 #ifdef BR_WIFI

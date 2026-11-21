@@ -590,25 +590,67 @@ static void t30_handle(const uint8_t *b, int len)
 	}
 }
 
+/* CRC-16/CCITT-FALSE over header bytes 4..7 and 10.. (len, cmd, flag,
+ * param, payload). Frames from our xr871d carry it in bytes 8..9 with flag
+ * byte 7 = 0x02 (the vendor value is 0x01, bytes 8..9 zero). */
+static uint16_t frame_crc(const uint8_t *f, int plen)
+{
+	uint16_t crc = 0xffff;
+	int i, j;
+
+	for (i = 4; i < BR_HDR_LEN + plen; i++) {
+		if (i == 8 || i == 9)
+			continue;
+		crc ^= (uint16_t)f[i] << 8;
+		for (j = 0; j < 8; j++)
+			crc = crc & 0x8000 ? (uint16_t)(crc << 1) ^ 0x1021 : (uint16_t)(crc << 1);
+	}
+	return crc;
+}
+
 void bridge_t30_rx(const uint8_t *in, int n)
 {
 	static uint8_t buf[BR_HDR_LEN + BR_MAX_PAYLOAD];
+	/* bytes to parse again after a damaged CRC frame (no recursion: the
+	 * thread stack is small); replay data comes before the rest of in[] */
+	static uint8_t replay[2 * sizeof(buf)], tmp[2 * sizeof(buf)];
+	static int rp, rn;
 	static uint32_t acc, last_ms;
 	uint32_t now = H->millis();
-	int i;
+	int i = 0;
 
 	/* a frame arrives in one burst at 115200 baud (<= 23 ms); a gap
-	 * means bytes were lost: drop the partial frame */
-	if (rx_have >= 0 && now - last_ms > 200)
+	 * means bytes were lost: drop the partial frame, but hunt through its
+	 * bytes again - the next frame may have been read into it. The glue
+	 * calls this with n == 0 while idle so the gap is noticed in time. */
+	if (rx_have >= 0 && now - last_ms > 200) {
+		if (rx_have > 4 && rp == rn) {
+			S.t30_bad++;
+			memcpy(replay, buf + 4, rx_have - 4);
+			rp = 0;
+			rn = rx_have - 4;
+			acc = 0;
+		}
 		rx_have = -1;
-	last_ms = now;
-	for (i = 0; i < n; i++) {
-		uint8_t c = in[i];
+	}
+	if (n > 0 || rp < rn)
+		last_ms = now;
+	for (;;) {
+		uint8_t c;
 
+		if (rp < rn)
+			c = replay[rp++];
+		else if (i < n)
+			c = in[i++];
+		else
+			break;
 		acc = (acc >> 8) | ((uint32_t)c << 24);
-		/* the magic restarts a frame only outside the payload: binary
-		 * payloads (firmware update data) may contain aa 55 aa 55 */
-		if (acc == 0x55aa55aaU && rx_have < BR_HDR_LEN) {
+		/* the magic restarts a frame, except inside the payload of a
+		 * CRC frame: binary payloads (firmware update data) may contain
+		 * aa 55 aa 55, and a damaged CRC frame is caught by the CRC.
+		 * Vendor-style frames (no CRC) resync as before. */
+		if (acc == 0x55aa55aaU &&
+		    (rx_have < BR_HDR_LEN || buf[7] != BR_FLAG_CRC)) {
 			buf[0] = 0xaa; buf[1] = 0x55; buf[2] = 0xaa; buf[3] = 0x55;
 			rx_have = 4;
 			continue;
@@ -618,12 +660,32 @@ void bridge_t30_rx(const uint8_t *in, int n)
 		buf[rx_have++] = c;
 		if (rx_have >= 6) {
 			uint16_t plen = buf[4] | (buf[5] << 8);
+
 			if (plen > BR_MAX_PAYLOAD) {
 				S.t30_bad++;
 				rx_have = -1;
 			} else if (rx_have == BR_HDR_LEN + plen) {
-				t30_handle(buf, rx_have);
-				rx_have = -1;
+				if (buf[7] == BR_FLAG_CRC &&
+				    frame_crc(buf, plen) != (uint16_t)(buf[8] | buf[9] << 8)) {
+					/* damaged on the line (lost bytes): drop it;
+					 * the next frame may have been read into it
+					 * (also just its first bytes), so hunt through
+					 * everything after the magic again */
+					int m = rx_have, t = m - 4;
+
+					S.t30_bad++;
+					rx_have = -1;
+					memcpy(tmp, buf + 4, t);
+					memcpy(tmp + t, replay + rp, rn - rp);
+					t += rn - rp;
+					memcpy(replay, tmp, t);
+					rp = 0;
+					rn = t;
+					acc = 0;
+				} else {
+					t30_handle(buf, rx_have);
+					rx_have = -1;
+				}
 			}
 		}
 	}

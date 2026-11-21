@@ -283,11 +283,25 @@ int wifi_config(const uint8_t *ssid, int ssid_len, const uint8_t *psk, int psk_l
 {
 	struct sysinfo *si = sysinfo_get();
 	uint8_t key[SYSINFO_PSK_LEN_MAX];
-	int changed;
+	int changed, i;
 
 	if (!si || ssid_len <= 0 || ssid_len > SYSINFO_SSID_LEN_MAX ||
 	    psk_len < 8 || psk_len >= SYSINFO_PSK_LEN_MAX)
 		return -1;
+	/* plausibility: a frame damaged on the UART must never replace good
+	 * credentials (2026-11-21: rejoin with a wrong key until reboot).
+	 * 64 chars = hex PSK, 8..63 = printable passphrase, SSID without NUL */
+	for (i = 0; i < psk_len; i++) {
+		uint8_t c = psk[i];
+
+		if (psk_len == 64 ? !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+				      (c >= 'A' && c <= 'F'))
+				  : (c < 0x20 || c > 0x7e))
+			return -1;
+	}
+	for (i = 0; i < ssid_len; i++)
+		if (!ssid[i])
+			return -1;
 	memset(key, 0, sizeof(key));
 	memcpy(key, psk, psk_len);
 	changed = si->wlan_sta_param.ssid_len != ssid_len ||

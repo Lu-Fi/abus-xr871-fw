@@ -359,8 +359,23 @@ def test_boot_usb(w):
 
 # ---- raw protocol ----------------------------------------------------------
 
-def frame(cmd, param=0, payload=b""):
-    return b"\xaa\x55\xaa\x55" + struct.pack("<HBBHH", len(payload), cmd, 1, 0, param) + payload
+def crc16(data):
+    crc = 0xFFFF
+    for b in data:
+        crc ^= b << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
+    return crc
+
+
+def frame(cmd, param=0, payload=b"", crc=True):
+    """T30 frame as xr871d sends it to our firmware: flag 0x02 + CRC16 over
+    len, cmd, flag, param, payload (bytes 8..9). crc=False: vendor style."""
+    if not crc:
+        return b"\xaa\x55\xaa\x55" + struct.pack("<HBBHH", len(payload), cmd, 1, 0, param) + payload
+    body = struct.pack("<HBB", len(payload), cmd, 2) + struct.pack("<H", param) + payload
+    c = crc16(body)
+    return b"\xaa\x55\xaa\x55" + struct.pack("<HBBHH", len(payload), cmd, 2, c, param) + payload
 
 
 class T30:
@@ -640,11 +655,29 @@ def test_slow(w):
         r.stop()
 
 
+def test_rx_loss(w):
+    """core receiver with lost UART bytes (unit test, tests/t30_rx_loss.c)"""
+    exe = os.path.join(w, "t30_rx_loss")
+    src = os.path.join(HERE, "t30_rx_loss.c")
+    fwd = os.path.join(HERE, "..")
+    r = subprocess.run(["cc", "-Wall", "-Wextra", "-I" + fwd, "-o", exe, src,
+                        os.path.join(fwd, "core", "bridge_core.c"),
+                        os.path.join(fwd, "core", "fw_update.c")],
+                       capture_output=True, text=True)
+    check("rx loss: unit test builds without warnings", r.returncode == 0 and not r.stderr.strip(),
+          r.stderr[-400:])
+    if r.returncode == 0:
+        r = subprocess.run([exe], capture_output=True, text=True)
+        print(r.stdout, end="")
+        check("rx loss: damaged CRC frames dropped, next frame kept", r.returncode == 0, r.stdout[-400:])
+
+
 def main():
     w = os.path.join(OUT, "t-" + time.strftime("%m%d-%H%M%S"))
     os.makedirs(w)
     print(f"firmware {FW}\nxr871d   {XD}\nimage.py {TOOL}")
     build(w)
+    test_rx_loss(w)
     test_stock(w)
     test_boot_usb(w)
     test_e2e(w)
