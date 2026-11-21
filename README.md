@@ -135,6 +135,6 @@ are only covered by the SDK build.
 - The current flash images have **OTA disabled in the bootloader header**: there
   is no A/B fallback, so `fwupdate --commit` is refused. Enabling it needs
   `tools/xr871-image.py set-ota` and one clip flash of sector 0.
-- Camera 1 is paused: hardware damage on the charger, unrelated to this
+- Camera 1 is dropped (2026-11-21): hardware damage on the charger, unrelated to this
   firmware.
 - See `AGENTS.md` for the working rules and `docs/` for details.
