@@ -111,14 +111,16 @@ the repository.
   [Lu-Fi UART Monitor](https://github.com/Lu-Fi/lufi-uart-monitor) ESP32.
   `tools/xr871-deploy-app.sh` wraps this.
 - **From Thingino over the internal UART** (`xr871d -c fwupdate`, A/B slots,
-  the bootloader is never written): in progress.
+  the bootloader is never written): works (staging verified on hardware);
+  switching slots needs A/B enabled once by clip, see
+  [docs/ab-ota-enable.md](docs/ab-ota-enable.md).
 
 Recovery is always possible with the clip and the original dump.
 
 ## Tests (host, no camera needed)
 
 ```bash
-cd firmware && python3 -I tests/run_tests.py     # 119 checks, incl. the update over a 115200 link model
+cd firmware && python3 -I tests/run_tests.py     # 133 checks, incl. the update over a 115200 link model
 ```
 
 `firmware/host` builds the portable core against a hardware model (MCU,

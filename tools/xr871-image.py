@@ -20,6 +20,12 @@
       NOTE: "build" keeps the priv fields of a boot section found in the
       base image (older versions wrote 0xff = OTA disabled).
 
+  xr871-image.py set-cfg <in.bin> <out.bin> 1|2 [fresh]
+      append a "verified" record for image 1 or 2 to the OTA config (SDK
+      fdcm at the OTA area of the boot header), exactly like the firmware
+      does on commit. "fresh" (or an unreadable/full area) rewrites the
+      whole area: header 0xA55A5AA5, stock bitmap size 497, one record.
+      Needs OTA enabled in the boot header (run set-ota first).
   xr871-image.py bootsel <flash.bin>
       which image the stock bootloader (= XR871 SDK bl_load_bin) would boot
       from this flash: OTA fields, last OTA config record, APP section check
@@ -169,6 +175,58 @@ def cmd_set_ota(src, out, addr="0x100000", size="0x4000"):
     return cmd_bootsel(out)
 
 
+FDCM_ID = 0xA55A5AA5
+FDCM_BMS = 497          # bitmap size the stock flash uses
+
+
+def fdcm_count(img, addr, size):
+    """records in a readable fdcm area, or None"""
+    idc, bms, dsz = struct.unpack_from("<IHH", img, addr)
+    if idc != FDCM_ID or dsz != 4 or bms == 0 or bms + 8 >= size:
+        return None
+    cnt = 0
+    for b in img[addr + 8:addr + 8 + bms]:
+        if b == 0:
+            cnt += 8
+            continue
+        v = (~b) & 0xFF
+        while v:
+            v >>= 1
+            cnt += 1
+        break
+    return cnt, bms
+
+
+def cmd_set_cfg(src, out, image, mode=""):
+    img = bytearray(open(src, "rb").read())
+    bl, addr, size, base = boot_layout(img)
+    if addr is None:
+        sys.exit("OTA is disabled in the boot header; run set-ota first")
+    if image not in ("1", "2"):
+        sys.exit("image must be 1 or 2")
+    seq = int(image) - 1
+    if not app_ok(img, bl, base[seq]):
+        sys.exit(f"image {image} has no valid APP section; refusing to point the config at it")
+    rec = struct.pack("<HH", 0x5555 if seq == 0 else 0xAAAA, 0x9669)
+    st = None if mode == "fresh" else fdcm_count(img, addr, size)
+    if st is not None:
+        cnt, bms = st
+        data = addr + 8 + bms
+        if cnt >= bms * 8 or data + 4 * (cnt + 1) > addr + size:
+            st = None           # full: start over like a fresh area
+    if st is None:
+        img[addr:addr + size] = b"\xff" * size
+        struct.pack_into("<IHH", img, addr, FDCM_ID, FDCM_BMS, 4)
+        cnt, bms = 0, FDCM_BMS
+    data = addr + 8 + bms
+    img[data + 4 * cnt:data + 4 * cnt + 4] = rec          # data slot first
+    img[addr + 8 + cnt // 8] &= ~(1 << (cnt % 8)) & 0xFF  # then the bitmap bit
+    open(out, "wb").write(img)
+    print(f"{out}: OTA config record {cnt} = image {image} (verified)" +
+          (", area rewritten" if cnt == 0 else ""))
+    return cmd_bootsel(out)
+
+
 def boot_layout(img):
     """(bl_size, ota_addr or None, ota_size, base[2]) like SDK image_init"""
     h = parse_hdr(img, 0)
@@ -271,6 +329,8 @@ def main():
         return cmd_build(*sys.argv[2:])
     if cmd == "set-ota":
         return cmd_set_ota(*sys.argv[2:6])
+    if cmd == "set-cfg":
+        return cmd_set_cfg(*sys.argv[2:6])
     if cmd == "bootsel":
         return cmd_bootsel(sys.argv[2])
     print(__doc__)

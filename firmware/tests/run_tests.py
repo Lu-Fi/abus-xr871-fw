@@ -41,9 +41,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ABUS = "/mnt/NVMe/git/ABUS"
 FW = os.environ.get("XR_FW") or os.path.dirname(HERE)
 XD = os.environ.get("XR_XD") or "/mnt/NVMe/git/thingino-aperto/package/xr871-bridge/files"
-TOOL = os.environ.get("XR_IMAGE_TOOL") or os.path.join(ABUS, "tools", "xr871-image.py")
+REPO_TOOLS = os.path.join(os.path.dirname(os.path.dirname(HERE)), "tools")
+TOOL = os.environ.get("XR_IMAGE_TOOL") or os.path.join(REPO_TOOLS, "xr871-image.py")
 OUT = os.environ.get("XR_TEST_OUT") or os.path.join(ABUS, "work", "fwtest")
-SIM = os.path.join(ABUS, "tools", "xr871-sim.py")
+SIM = os.path.join(REPO_TOOLS, "xr871-sim.py")
 CORE = "abus-xr871 core 4"
 spec = importlib.util.spec_from_file_location("xi", TOOL)
 xi = importlib.util.module_from_spec(spec)
@@ -303,6 +304,41 @@ def test_e2e(w):
         r.stop()
     hl = read(r.hostlog)
     check("e2e: core reported no bad T30 frames", "bad 0 " in hl or "bad frames 0" in hl, hl[-400:])
+
+
+def test_ab_enable(w):
+    """enable A/B on an OTA-disabled flash like the clip procedure:
+    set-ota + set-cfg 1 only touch sector 0 and the OTA area; the result
+    boots image 1, and a full update can then commit image 2"""
+    print("== 3b. A/B enable on an OTA-disabled flash (set-ota + set-cfg)")
+    img = os.path.join(w, "img")
+    src, a, b = f"{img}/flash_noota.bin", os.path.join(w, "ab-ota.bin"), os.path.join(w, "ab-cfg.bin")
+    r1 = subprocess.run([sys.executable, "-I", TOOL, "set-ota", src, a], capture_output=True, text=True)
+    r2 = subprocess.run([sys.executable, "-I", TOOL, "set-cfg", a, b, "1"], capture_output=True, text=True)
+    check("ab: set-ota and set-cfg 1 succeed", r1.returncode == 0 and r2.returncode == 0,
+          r1.stdout + r1.stderr + r2.stdout + r2.stderr)
+    if r2.returncode:
+        return
+    orig, new = open(src, "rb").read(), open(b, "rb").read()
+    check("ab: only sector 0 and the OTA area changed",
+          only_in(flash_diff(orig, new), [(0, 0x1000), (0x100000, 0x104000)]),
+          [(hex(x), hex(y)) for x, y in flash_diff(orig, new)[:4]])
+    check("ab: bootloader model boots image 1", xi.bootsel(new)[0] == 1, xi.bootsel(new))
+    r3 = subprocess.run([sys.executable, "-I", TOOL, "set-cfg", src, a + ".x", "1"],
+                        capture_output=True, text=True)
+    check("ab: set-cfg refused while OTA is disabled", r3.returncode != 0)
+    r = Rig(w, "abenable", b, 0x8000)
+    try:
+        check("ab: bridge firmware detected", r.up)
+        rc, o = r.c("fwupdate --info")
+        check("ab: --info running 1, target 2, OTA enabled",
+              rc == 0 and "running image 1, target image 2, OTA enabled" in o, o)
+        rc, o = r.c(f"fwupdate {img}/new_chain.bin --commit")
+        fl = open(r.flash, "rb").read()
+        check("ab: update + commit -> bootloader model boots image 2",
+              rc == 0 and xi.bootsel(fl)[0] == 2, xi.bootsel(fl))
+    finally:
+        r.stop()
 
 
 def test_noota(w):
@@ -695,6 +731,7 @@ def main():
     test_boot_usb(w)
     test_e2e(w)
     test_noota(w)
+    test_ab_enable(w)
     test_raw(w)
     test_slow(w)
     n_ok = sum(1 for _, ok in results if ok)
