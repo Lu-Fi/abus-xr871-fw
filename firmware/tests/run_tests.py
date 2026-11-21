@@ -258,17 +258,14 @@ def test_e2e(w):
 
         # firmware update
         orig = open(r.flash, "rb").read()
-        rc, o = r.c(f"fwupdate {img}/new_full.bin")
-        check("e2e fwupdate: transfer refused without --wifi-may-drop",
-              rc == 2 and "wifi-may-drop" in o, o)
-        rc, o = r.c(f"fwupdate --wifi-may-drop {img}/bad_full.bin")
+        rc, o = r.c(f"fwupdate {img}/bad_full.bin")
         check("e2e fwupdate: corrupt image refused by xr871d", rc == 1 and "bad data checksum" in o, o)
         check("e2e fwupdate: flash untouched after refusal", open(r.flash, "rb").read() == orig)
         rc, o = r.c("fwupdate --info")
         check("e2e fwupdate --info: running 1, target 2, OTA enabled",
               rc == 0 and "running image 1, target image 2, OTA enabled" in o, o)
         t0 = time.time()
-        rc, o = r.c(f"fwupdate --wifi-may-drop {img}/new_full.bin")
+        rc, o = r.c(f"fwupdate {img}/new_full.bin")
         dt = time.time() - t0
         check("e2e fwupdate: staged + verified", rc == 0 and "verified: crc" in o and "staged only" in o, o)
         new = open(f"{img}/new_full.bin", "rb").read()
@@ -287,7 +284,7 @@ def test_e2e(w):
               only_in(flash_diff(fl, fl2), [(0x100000, 0x104000)]) and
               sum(e - s for s, e in flash_diff(fl, fl2)) <= 0x200)
         check("e2e commit: bootloader model now boots image 2", xi.bootsel(fl2)[0] == 2, xi.bootsel(fl2))
-        rc, o = r.c(f"fwupdate --wifi-may-drop {img}/new_full.bin")
+        rc, o = r.c(f"fwupdate {img}/new_full.bin")
         check("e2e: new transfer refused after commit (reboot or abort first)",
               rc == 1 and "wrong state" in o, o)
         rc, o = r.c("fwupdate --abort")
@@ -310,10 +307,14 @@ def test_e2e(w):
 def test_noota(w):
     print("== 3. flash with OTA disabled in the boot header (like m1/m2)")
     img = os.path.join(w, "img")
-    r = Rig(w, "noota", f"{img}/flash_noota.bin", 0x8000)
+    r = Rig(w, "noota", f"{img}/flash_noota.bin", 0x8000, env_extra={"XR_VERSION": "ap20 m2"})
     try:
         check("noota: bridge firmware detected", r.up)
         orig = open(r.flash, "rb").read()
+        rc, o = r.c(f"fwupdate {img}/new_chain.bin --force-stage")
+        check("noota: build ap20 refused without --wifi-may-drop",
+              rc == 2 and "ap20" in o and "wifi-may-drop" in o, o)
+        check("noota: flash untouched after the ap20 refusal", open(r.flash, "rb").read() == orig)
         rc, o = r.c(f"fwupdate --wifi-may-drop {img}/new_chain.bin")
         check("noota: update refused (OTA disabled)", rc == 1 and "OTA disabled" in o, o)
         check("noota: flash untouched", open(r.flash, "rb").read() == orig)
@@ -637,7 +638,7 @@ def test_slow(w):
         rc, o = r.c("status")
         check("slow: status ok", rc == 0 and "battery:        77 %" in o, o)
         t0 = time.time()
-        rc, o = r.c(f"fwupdate --wifi-may-drop {img}/new_chain.bin --commit")
+        rc, o = r.c(f"fwupdate {img}/new_chain.bin --commit")
         dt = time.time() - t0
         check("slow: fwupdate + commit at UART speed", rc == 0 and "committed" in o, o[-400:])
         check("slow: no retries needed", "retrying" not in o)

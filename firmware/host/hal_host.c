@@ -335,7 +335,7 @@ static void h_wifi_tx(const uint8_t *frame, int len)
 		sendto(udp, frame, len, 0, (struct sockaddr *)&netsim, sizeof(netsim));
 }
 
-static const struct bridge_hal hal = {
+static struct bridge_hal hal = {
 	.t30_write = h_t30_write, .mcu_send = h_mcu_send, .t30_power = h_t30_power,
 	.millis = h_millis, .log = h_log, .wifi_tx = h_wifi_tx,
 	.wifi_status = h_wifi_status, .low_power = h_low_power,
@@ -499,6 +499,8 @@ int main(int argc, char **argv)
 	}
 	clock_gettime(CLOCK_MONOTONIC, &t0);
 	flash_setup();
+	if (getenv("XR_VERSION"))	/* glue version string, e.g. "ap20 m2" */
+		hal.version = getenv("XR_VERSION");
 	bridge_init(&hal, 4);
 	mcu_queue(0x0c, 0x01, 1000);	/* USB power present */
 	if (spi >= 0) {
