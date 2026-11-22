@@ -63,7 +63,7 @@ index 11fda63..8b456e7 100755
  
  /* FD_SET used for lwip_select */
 diff --git a/project/common/framework/sysinfo.c b/project/common/framework/sysinfo.c
-index 41e0065..4594a66 100644
+index 41e0065..0587923 100644
 --- a/project/common/framework/sysinfo.c
 +++ b/project/common/framework/sysinfo.c
 @@ -48,7 +48,7 @@ static fdcm_handle_t *g_fdcm_hdl;
@@ -75,6 +75,24 @@ index 41e0065..4594a66 100644
  
  static void sysinfo_gen_mac_random(uint8_t mac_addr[6])
  {
+@@ -60,7 +60,7 @@ static void sysinfo_gen_mac_random(uint8_t mac_addr[6])
+ 		mac_addr[i] = (uint8_t)OS_Rand32();
+ 	}
+ #endif
+-	mac_addr[0] &= 0xFC;
++	mac_addr[0] = (mac_addr[0] & 0xFC) | 0x02; /* ABUS: unicast, locally administered */
+ }
+ 
+ static void sysinfo_gen_mac_by_chipid(uint8_t mac_addr[6])
+@@ -76,7 +76,7 @@ static void sysinfo_gen_mac_by_chipid(uint8_t mac_addr[6])
+ 	for (i = 2; i < 6; ++i) {
+ 		mac_addr[i] = chipid[i] ^ chipid[i + 6] ^ chipid[i + 10];
+ 	}
+-	mac_addr[0] &= 0xFC;
++	mac_addr[0] = (mac_addr[0] & 0xFC) | 0x02; /* ABUS: unicast, locally administered */
+ }
+ 
+ static void sysinfo_init_mac_addr(void)
 diff --git a/project/common/startup/gcc/exception.c b/project/common/startup/gcc/exception.c
 index 7b93c65..14265ae 100755
 --- a/project/common/startup/gcc/exception.c

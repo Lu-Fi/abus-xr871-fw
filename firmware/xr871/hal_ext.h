@@ -4,7 +4,7 @@
 #include "core/bridge_core.h"
 
 /* build name, shown in the boot banner and in the status record (0xd0) */
-#define HAL_EXT_BUILD "ap22"
+#define HAL_EXT_BUILD "ap23"
 
 /* fill in the optional bridge_hal extensions (version, battery, GPIO test,
  * log queue lock, flash access for the update, reboot). Call once before

@@ -88,7 +88,12 @@ extern "C" {
 #endif /* PRJCONF_SYSINFO_SAVE_TO_FLASH */
 
 /* MAC address source */
-#define PRJCONF_MAC_ADDR_SOURCE         SYSINFO_MAC_ADDR_CODE /* chip-ID eFuse read resets this board */
+/* ABUS: MAC from the eFuse chip ID (served from the early RAM copy, see
+ * hal_efuse.c), made locally administered: stable and different on every
+ * camera. sysinfo is not kept in flash here, so a random MAC would change on
+ * every boot; the earlier fixed MAC in code gave all cameras one address.
+ * A chip ID of all zeros falls back to a random MAC. */
+#define PRJCONF_MAC_ADDR_SOURCE         SYSINFO_MAC_ADDR_CHIPID
 
 /* watchdog enable/disable */
 #define PRJCONF_WDG_EN                  1
