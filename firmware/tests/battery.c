@@ -4,7 +4,8 @@
  *   - low-battery shutdown {0x24,0} without USB after BR_LOWBAT_READS low
  *     readings, once, re-armed by USB power;
  *   - no shutdown with USB unknown, on USB, or with a healthy VBAT;
- *   - the status record (0xd0) carries T2E/T2F, restarts and the low count.
+ *   - the status record (0xd0) carries T2E/T2F, restarts and the low count;
+ *   - LED request 0xd5: stored, answered, cleared by a T30 hello.
  *
  * Build: cc -Wall -Wextra -I.. -o battery battery.c ../core/bridge_core.c ../core/fw_update.c
  */
@@ -19,9 +20,14 @@ static int nsent;
 static uint8_t st[BR_STATUS_LEN];
 static int st_len;
 
+static int led_reply = -1;
+
 static void w(const uint8_t *b, int l)
 {
 	int plen = b[4] | b[5] << 8;
+
+	if (l >= BR_HDR_LEN && b[6] == T30_LED)
+		led_reply = b[10] | b[11] << 8;
 
 	if (l >= BR_HDR_LEN && b[6] == T30_STATUS) {
 		st_len = plen;
@@ -67,6 +73,14 @@ static void status(void)
 	uint8_t f[12] = { 0xaa, 0x55, 0xaa, 0x55, 0, 0, T30_STATUS, 0x01, 0, 0, 0, 0 };
 
 	st_len = 0;
+	bridge_t30_rx(f, sizeof(f));
+}
+
+static void t30_cmd(uint8_t cmd, uint16_t param)
+{
+	uint8_t f[12] = { 0xaa, 0x55, 0xaa, 0x55, 0, 0, cmd, 0x01, 0, 0,
+			  param & 0xff, param >> 8 };
+
 	bridge_t30_rx(f, sizeof(f));
 }
 
@@ -153,6 +167,17 @@ int main(void)
 	bridge_battery(-1, -1, -1, -1);
 	bridge_battery(101, 4000, -1, -1);
 	expect("invalid readings ignored", nsent == i);
+
+	/* LED request from the T30 */
+	led_reply = -1;
+	t30_cmd(T30_LED, 0x0101);
+	expect("LED 0xd5: blue stored, other bits dropped, answered",
+	       bridge_stats()->led_req == BR_LED_BLUE && led_reply == BR_LED_BLUE);
+	t30_cmd(T30_LED, 0);
+	expect("LED 0xd5: blue off", bridge_stats()->led_req == 0 && led_reply == 0);
+	t30_cmd(T30_LED, 1);
+	t30_cmd(T30_HELLO, 0);
+	expect("LED request cleared by a T30 hello", bridge_stats()->led_req == 0);
 
 	printf(fails ? "BATTERY: %d FAIL\n" : "BATTERY PASS\n", fails);
 	return fails != 0;

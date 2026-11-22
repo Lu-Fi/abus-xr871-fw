@@ -189,6 +189,11 @@ int bridge_gpio_protected(int port, int pin)
 	return 0;
 }
 
+int bridge_gpio_busy(int port, int pin)
+{
+	return G.active && G.port == port && G.pin == pin;
+}
+
 static void gpio_release(void)
 {
 	if (!G.active)
@@ -441,6 +446,7 @@ static void t30_handle(const uint8_t *b, int len)
 	case T30_HELLO:
 		S.t30_hello++;
 		fwd = 0;	/* a (re)started T30 application opts in again */
+		S.led_req = 0;
 		H->log("t30: hello (+%lu ms after power-on)\n",
 		       (unsigned long)(now - S.t30_power_on_ms));
 		put_le32(p, wake_src);
@@ -561,6 +567,10 @@ static void t30_handle(const uint8_t *b, int len)
 		break;
 	case T30_GPIO:
 		gpio_cmd(b + BR_HDR_LEN, plen);
+		break;
+	case T30_LED:
+		S.led_req = param & BR_LED_BLUE;
+		t30_send(T30_LED, S.led_req, NULL, 0);
 		break;
 	case T30_FWD:
 		fwd = param & (BR_FWD_LOG | BR_FWD_MCU);
@@ -827,6 +837,7 @@ void bridge_init(const struct bridge_hal *hal, uint32_t wake_source)
 static void t30_off(void)
 {
 	gpio_release();
+	S.led_req = 0;
 	H->t30_power(0);
 	mcu_send(MCU_DSP_POWER, 0x09);
 	st = ST_OFF;

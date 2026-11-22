@@ -103,6 +103,9 @@ struct bridge_hal {
  *                      u16 blink half period ms (0 = 250)
  *                      reply param = level (READ) / 0, BR_E_DENIED, BR_E_FAIL
  *   0xd4 forwarding    param bit0 = XR871 log lines, bit1 = MCU events
+ *   0xd5 LED request   param bit0 = blue LED on (e.g. a video stream runs);
+ *                      reply param = the accepted bits. Cleared when the
+ *                      T30 says hello or powers off.
  *   0xd8..0xdc         application update, see fw_update.h
  * XR871 -> T30, only after the T30 enabled them with 0xd4 (the stock T30
  * application never does, so it never sees these frames):
@@ -114,6 +117,8 @@ struct bridge_hal {
 #define XR_MCU_EVENT 0xd2
 #define T30_GPIO 0xd3
 #define T30_FWD 0xd4
+#define T30_LED 0xd5
+#define BR_LED_BLUE 0x01
 #define XR_LOG 0xd4
 #define BR_FWD_LOG 0x01
 #define BR_FWD_MCU 0x02
@@ -197,6 +202,7 @@ struct bridge_stats {
 	int t2e, t2f;		/* AXP2601 time to empty / full, minutes, -1 = unknown */
 	uint32_t chg_restarts;	/* {0x21} charge restarts sent */
 	uint8_t lowbat_n;	/* low readings in a row; 0xff = shutdown sent */
+	uint8_t led_req;	/* BR_LED_* requested by the running T30 */
 };
 
 void bridge_init(const struct bridge_hal *hal, uint32_t wake_source);
@@ -240,6 +246,8 @@ const struct bridge_stats *bridge_stats(void);
 void bridge_log_capture(const char *line, int len);
 /* 1 = pin must never be driven (see bridge_core.c) */
 int bridge_gpio_protected(int port, int pin);
+/* 1 while a T30 GPIO test holds this pin: the glue leaves it alone */
+int bridge_gpio_busy(int port, int pin);
 
 /*
  * Status reply (0xd0, param = BR_STATUS_VERSION), little endian:

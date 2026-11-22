@@ -31,7 +31,6 @@
 
 #define IMG_FLASH	0	/* = PRJCONF_IMG_FLASH */
 #define BOOT_AREA_END	0x8000U	/* bootloader: never written at runtime */
-#define LED_PIN		10	/* blue charge LED, see main.c led_update() */
 #define BAT_MAX_AGE_MS	120000U
 
 #ifdef BR_WIFI
@@ -73,7 +72,7 @@ static int ext_gpio(int port, int pin, int mode)
 {
 	GPIO_InitParam p = { GPIOx_Pn_F1_OUTPUT, GPIO_DRIVING_LEVEL_1, GPIO_PULL_NONE };
 
-	if (port != 0 || bridge_gpio_protected(port, pin) || pin == LED_PIN)
+	if (port != 0 || bridge_gpio_protected(port, pin))
 		return -1;
 #ifdef BR_WIFI
 	if (pin == spis_ready_pin())
@@ -91,7 +90,9 @@ static int ext_gpio(int port, int pin, int mode)
 		HAL_GPIO_Init(GPIO_PORT_A, (GPIO_Pin)pin, &p);
 		return HAL_GPIO_ReadPin(GPIO_PORT_A, (GPIO_Pin)pin) == GPIO_PIN_HIGH;
 	case BR_GPIO_RELEASE:
-		if (pin == 14 || pin == 15) {	/* main.c holds these low */
+		/* main.c holds 14/15 low and drives the LEDs on 10/11 (led_update
+		 * skips a pin while a test holds it and takes it back after) */
+		if (pin == 10 || pin == 11 || pin == 14 || pin == 15) {
 			HAL_GPIO_Init(GPIO_PORT_A, (GPIO_Pin)pin, &p);
 			HAL_GPIO_WritePin(GPIO_PORT_A, (GPIO_Pin)pin, GPIO_PIN_LOW);
 		} else {

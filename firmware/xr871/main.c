@@ -1010,9 +1010,13 @@ static int bat_read(uint16_t *mv, uint8_t *soc, int8_t *t, uint8_t *flags)
 }
 
 /*
- * Blue LED (PA10) as charge indicator, like the stock firmware: slow blink
- * while USB power is in and the battery is not full, on when full on USB,
- * off on battery (saves power). Called about once per second.
+ * Status LEDs, updated about once per second:
+ *   red (PA11):  charge indicator like the stock firmware's charge LED -
+ *                slow blink while USB power is in and the battery is not
+ *                full, on when full on USB, off on battery;
+ *   blue (PA10): on while the T30 asks for it (T30_LED, xr871d sets it
+ *                while a video stream runs), off when the T30 is off.
+ * A pin held by a T30 GPIO test is left alone.
  */
 static int led_soc = -1;
 
@@ -1020,11 +1024,16 @@ static void led_update(void)
 {
 	static int phase;
 	const struct bridge_stats *st = bridge_stats();
-	int on = 0;
+	int red = 0, blue;
 
+	phase ^= 1;
 	if (st->usb == 1 && led_soc >= 0)
-		on = led_soc >= 100 ? 1 : (phase ^= 1);
-	HAL_GPIO_WritePin(GPIO_PORT_A, GPIO_PIN_10, on ? GPIO_PIN_HIGH : GPIO_PIN_LOW);
+		red = led_soc >= 100 ? 1 : phase;
+	blue = st->t30_on && (st->led_req & BR_LED_BLUE);
+	if (!bridge_gpio_busy(0, 11))
+		HAL_GPIO_WritePin(GPIO_PORT_A, GPIO_PIN_11, red ? GPIO_PIN_HIGH : GPIO_PIN_LOW);
+	if (!bridge_gpio_busy(0, 10))
+		HAL_GPIO_WritePin(GPIO_PORT_A, GPIO_PIN_10, blue ? GPIO_PIN_HIGH : GPIO_PIN_LOW);
 }
 
 static void bat_report(void)
@@ -1261,7 +1270,8 @@ int main(void)
 	out_pin(T30_PWR_PIN, GPIO_PIN_LOW);
 	out_pin(GPIO_PIN_14, GPIO_PIN_LOW);
 	out_pin(GPIO_PIN_15, GPIO_PIN_LOW);
-	out_pin(GPIO_PIN_10, GPIO_PIN_LOW);	/* blue LED, charge indicator */
+	out_pin(GPIO_PIN_10, GPIO_PIN_LOW);	/* blue LED: video stream */
+	out_pin(GPIO_PIN_11, GPIO_PIN_LOW);	/* red LED: charge indicator */
 
 	OS_MutexCreate(&i2c_lock);
 	OS_MutexCreate(&core_lock);
