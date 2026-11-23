@@ -9,7 +9,8 @@
  *   - an ACK with our xid renews (next request only after the new T1), one
  *     with a foreign xid is ignored; a NAK stops the renewal;
  *   - no answer until the lease ends: give up;
- *   - ARP for the T30's IP is still answered in standby.
+ *   - ARP for the T30's IP is still answered in standby;
+ *   - requests go only through wifi_tx_async (never sent under the core lock).
  *
  * Build: cc -Wall -Wextra -I.. -o dhcp dhcp.c ../core/bridge_core.c ../core/fw_update.c
  */
@@ -178,7 +179,7 @@ int main(void)
 	int n;
 
 	h.t30_write = w; h.mcu_send = mcu; h.t30_power = pw; h.millis = mil;
-	h.log = lg; h.wifi_tx = wtx;
+	h.log = lg; h.wifi_tx = wtx; h.wifi_tx_async = wtx;
 	bridge_init(&h, 0);
 	S = bridge_stats();
 
@@ -275,6 +276,19 @@ int main(void)
 	n_dhcp_tx = 0;
 	advance(1000, 40 * 60 * 1000, 1);
 	expect("T30 awake: still no DHCP from the core", n_dhcp_tx == 0);
+
+	/* glue without an async sender: the core never sends under its lock */
+	h.wifi_tx_async = NULL;
+	bridge_init(&h, 0);
+	t30_cmd(T30_HEARTBEAT, 0);
+	n = dhcp_frame(f, 1, 3, 0x4444, 0);
+	t30_up(f, n);
+	n = dhcp_frame(f, 2, 5, 0x4444, 1800);
+	bridge_wifi_rx(f, n);
+	sleep_t30();
+	n_dhcp_tx = 0;
+	advance(1000, 25 * 60 * 1000, 0);
+	expect("no wifi_tx_async in the glue: no standby renewal", n_dhcp_tx == 0);
 
 	printf(fails ? "DHCP FAIL\n" : "DHCP PASS\n");
 	return fails ? 1 : 0;

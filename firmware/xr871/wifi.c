@@ -19,6 +19,7 @@
 #include "kernel/os/os.h"
 #include "lwip/netif.h"
 #include "lwip/pbuf.h"
+#include "lwip/tcpip.h"
 #include "net/wlan/wlan.h"
 #include "common/framework/net_ctrl.h"
 #include "common/framework/sysinfo.h"
@@ -226,6 +227,39 @@ void wifi_tx(const uint8_t *frame, int len)
 	else
 		n_tx_err++;
 	pbuf_free(p);
+}
+
+/*
+ * Frames the core makes up itself while the T30 sleeps (DHCP renewal) are
+ * sent from the lwIP thread, never from the caller: linkoutput is a
+ * synchronous call into the WLAN core (ducc_app_ioctl) and the caller holds
+ * the core lock. One frame in flight; a second one while busy is dropped.
+ */
+static uint8_t atx_buf[600];
+static int atx_len;
+static volatile int atx_busy;
+static uint32_t n_atx_drop;
+
+static void atx_send(void *ctx)
+{
+	(void)ctx;
+	wifi_tx(atx_buf, atx_len);
+	atx_busy = 0;
+}
+
+void wifi_tx_async(const uint8_t *frame, int len)
+{
+	if (atx_busy || len <= 0 || len > (int)sizeof(atx_buf)) {
+		n_atx_drop++;
+		return;
+	}
+	memcpy(atx_buf, frame, len);
+	atx_len = len;
+	atx_busy = 1;
+	if (tcpip_callback_with_block(atx_send, NULL, 0) != ERR_OK) {
+		atx_busy = 0;
+		n_atx_drop++;
+	}
 }
 
 int wifi_status(uint8_t *mac, int8_t *rssi)

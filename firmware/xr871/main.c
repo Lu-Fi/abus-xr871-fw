@@ -1285,6 +1285,9 @@ int main(void)
 	mcu_irq_enable();
 
 	hal_ext_fill(&hal);
+#ifdef BR_WIFI
+	hal.wifi_tx_async = wifi_tx_async;
+#endif
 	/* wake source 4 = what the stock firmware reported in the sim tests */
 	OS_MutexLock(&core_lock, OS_WAIT_FOREVER);
 	bridge_init(&hal, BR_WAKE_COLD);

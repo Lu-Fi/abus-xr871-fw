@@ -57,6 +57,12 @@ struct bridge_hal {
 	 * 0 = equal, 1 = different, <0 = cannot tell */
 	int (*ram_compare)(uint32_t addr, const void *buf, uint32_t len);
 	void (*reboot)(void);			/* reset the XR871 (and so the T30) */
+	/* queue one Ethernet frame for sending outside the core lock (may drop
+	 * it when busy). Used for frames the core makes up on its own while
+	 * the T30 sleeps (DHCP renewal): sending to the WLAN core can block
+	 * for long in power save, and the core lock must stay free for PIR,
+	 * ARP and wake-up. NULL = no standby DHCP renewal. */
+	void (*wifi_tx_async)(const uint8_t *frame, int len);
 };
 
 #define BR_GPIO_LOW	0

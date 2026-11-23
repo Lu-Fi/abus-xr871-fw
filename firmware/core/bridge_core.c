@@ -1235,7 +1235,7 @@ static void dhcp_poll(uint32_t now)
 	uint8_t f[14 + 20 + 8 + 300 + 80];
 	uint32_t age, n;
 
-	if (st != ST_OFF || !dh.valid || !H->wifi_tx)
+	if (st != ST_OFF || !dh.valid || !H->wifi_tx_async)
 		return;
 	age = now - dh.ack_ms;
 	if (age >= dh.lease_s * 1000u) {
@@ -1251,7 +1251,7 @@ static void dhcp_poll(uint32_t now)
 	n = bridge_dhcp_build(f, sizeof(f));
 	if (!n)
 		return;
-	H->wifi_tx(f, n);
+	H->wifi_tx_async(f, n);	/* never block under the core lock */
 	S.dhcp_req++;
 	dh.next_ms = now + BR_DHCP_RETRY_MS;
 	if (!dh.next_ms)
