@@ -720,6 +720,11 @@ def test_battery(w):
     unit_test(w, "battery", "battery", "charge restart, low-battery shutdown, status tail")
 
 
+def test_dhcp(w):
+    """standby DHCP renewal while the T30 sleeps (tests/dhcp.c)"""
+    unit_test(w, "dhcp", "dhcp", "lease learnt, renewed at T1 in standby, NAK/expiry stop")
+
+
 def main():
     w = os.path.join(OUT, "t-" + time.strftime("%m%d-%H%M%S"))
     os.makedirs(w)
@@ -727,6 +732,7 @@ def main():
     build(w)
     test_rx_loss(w)
     test_battery(w)
+    test_dhcp(w)
     test_stock(w)
     test_boot_usb(w)
     test_e2e(w)

@@ -184,6 +184,18 @@ struct bridge_hal {
 #define BR_WAKE_TIMER 0x104
 #define BR_SLEEP_GRACE_MS 1500
 
+/*
+ * Standby DHCP renewal: while the T30 runs, the core learns its lease from
+ * the T30's own DHCP traffic (client id + hostname from its requests; IP,
+ * server id/MAC and lease time from the server's ACK). While the T30 sleeps
+ * the core renews that lease itself (unicast DHCPREQUEST, RFC 2131 RENEWING)
+ * at T1 (option 58, else lease/2), retrying every BR_DHCP_RETRY_MS until the
+ * lease ends; a NAK stops it. Without this a short lease (30 min) expires
+ * during a long sleep and the camera is no longer reachable from the LAN.
+ */
+#define BR_DHCP_RETRY_MS 60000u
+#define BR_DHCP_MAX_T1_S 43200u	/* renew at least every 12 h */
+
 struct bridge_stats {
 	uint32_t t30_frames, t30_bad, t30_hb, t30_hello;
 	uint32_t t30_last_hb_ms, t30_power_on_ms, t30_first_hb_ms;
@@ -198,6 +210,7 @@ struct bridge_stats {
 	uint8_t mcu_state1, mcu_state2, mcu_usb, mcu_mainbat;
 	uint8_t mcu_seen;	/* bit0 state1, bit1 state2, bit2 usb, bit3 mainbat */
 	uint32_t log_lines, log_dropped, mcu_events_fwd;
+	uint32_t dhcp_req, dhcp_ack, dhcp_nak;	/* standby DHCP renewal (T30 off) */
 	int bat_soc, bat_mv;	/* last bridge_battery() reading, -1 = none */
 	int t2e, t2f;		/* AXP2601 time to empty / full, minutes, -1 = unknown */
 	uint32_t chg_restarts;	/* {0x21} charge restarts sent */
@@ -211,6 +224,8 @@ void bridge_t30_send(uint8_t cmd, uint16_t param, const void *payload, uint16_t 
 void bridge_t30_rx(const uint8_t *buf, int len);
 void bridge_mcu_rx(uint8_t cmd, uint8_t val);
 void bridge_poll(void);		/* call about every 100 ms */
+/* standby DHCP renewal: the request frame the core would send now (tests) */
+int bridge_dhcp_build(uint8_t *frame, int cap);
 /*
  * One fuel gauge reading (glue, about every 30 s, also while the T30 sleeps):
  * soc 0..100 (<0 = read failed), mv, t2e/t2f in minutes (<0 = unknown).

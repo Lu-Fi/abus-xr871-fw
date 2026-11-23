@@ -36,6 +36,8 @@ static uint8_t t30_ip[4];	/* learnt from the T30's own IPv4 frames */
 static int t30_ip_known;
 
 static void wq_clear(void);
+static void dhcp_poll(uint32_t now);
+static void dhcp_reset(void);
 static void gpio_release(void);
 static uint8_t fwd;		/* BR_FWD_* enabled by the T30 */
 static int rx_have = -1;	/* T30 frame bytes collected, -1 = hunting magic */
@@ -816,6 +818,7 @@ void bridge_init(const struct bridge_hal *hal, uint32_t wake_source)
 	S.usb = -1;
 	S.bat_soc = S.bat_mv = S.t2e = S.t2f = -1;
 	wake_src = wake_source;
+	dhcp_reset();
 	fwu_init(hal);
 	H->log("abus-xr871 keepalive firmware, milestone 1 (%s%s%s)\n", CORE_VERSION,
 	       H->version ? ", " : "", H->version ? H->version : "");
@@ -952,6 +955,7 @@ void bridge_poll(void)
 		t30_off();
 	if (st == ST_OFF && wake_at && (int32_t)(now - wake_at) >= 0)
 		bridge_wake(BR_WAKE_TIMER);
+	dhcp_poll(now);
 	gpio_poll(now);
 	log_drain(now);
 	if (now - last_status_ms < (st == ST_OFF ? 60000u : 10000u))
@@ -1008,6 +1012,254 @@ static int is_magic(const uint8_t *p, int len)
 	return 0;
 }
 
+/* ---- standby DHCP renewal (see BR_DHCP_* in bridge_core.h) ------------- */
+
+static struct {
+	uint8_t cid[34], cid_len;	/* option 61 of the T30's requests */
+	uint8_t host[34], host_len;	/* option 12 */
+	uint8_t ip[4], srv_ip[4], srv_mac[6];
+	uint32_t lease_s, t1_s;		/* from the last ACK */
+	uint32_t ack_ms;		/* when that ACK was seen */
+	uint32_t next_ms;		/* next standby request (0 = none due) */
+	uint32_t xid;
+	int valid;			/* a lease is known and not given up */
+} dh;
+
+static void dhcp_reset(void)
+{
+	memset(&dh, 0, sizeof(dh));
+}
+
+static uint32_t get_be32(const uint8_t *p)
+{
+	return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
+}
+
+/* IPv4/UDP frame between DHCP ports: returns the BOOTP offset, else 0 */
+static int dhcp_off(const uint8_t *eth, int len, unsigned sport, unsigned dport)
+{
+	unsigned ihl;
+	int b;
+
+	if (len < 14 + 20 + 8 + 240 || eth[12] != 0x08 || eth[13] != 0x00 ||
+	    (eth[14] >> 4) != 4 || eth[23] != 17)
+		return 0;
+	if ((eth[20] & 0x3f) || eth[21])	/* fragments: not ours */
+		return 0;
+	ihl = (eth[14] & 0x0f) * 4;
+	b = 14 + ihl;
+	if (ihl < 20 || len < b + 8 + 240)
+		return 0;
+	if ((unsigned)(eth[b] << 8 | eth[b + 1]) != sport ||
+	    (unsigned)(eth[b + 2] << 8 | eth[b + 3]) != dport)
+		return 0;
+	b += 8;
+	if (get_be32(eth + b + 236) != 0x63825363)	/* magic cookie */
+		return 0;
+	return b;
+}
+
+/* find option code in the BOOTP options; returns its length or -1 */
+static int dhcp_opt(const uint8_t *eth, int len, int b, uint8_t code, const uint8_t **val)
+{
+	int i = b + 240;
+
+	while (i < len) {
+		uint8_t c = eth[i];
+
+		if (c == 255)
+			break;
+		if (c == 0) {
+			i++;
+			continue;
+		}
+		if (i + 1 >= len || i + 2 + eth[i + 1] > len)
+			break;
+		if (c == code) {
+			*val = eth + i + 2;
+			return eth[i + 1];
+		}
+		i += 2 + eth[i + 1];
+	}
+	return -1;
+}
+
+/* T30 -> LAN: remember client id and hostname of its requests */
+static void dhcp_learn_up(const uint8_t *eth, int len)
+{
+	const uint8_t *v;
+	int b = dhcp_off(eth, len, 68, 67), n;
+
+	if (!b || eth[b] != 1)
+		return;
+	n = dhcp_opt(eth, len, b, 61, &v);
+	if (n > 0 && n <= (int)sizeof(dh.cid)) {
+		memcpy(dh.cid, v, n);
+		dh.cid_len = n;
+	}
+	n = dhcp_opt(eth, len, b, 12, &v);
+	if (n > 0 && n <= (int)sizeof(dh.host)) {
+		memcpy(dh.host, v, n);
+		dh.host_len = n;
+	}
+}
+
+/* LAN -> T30 (or to us in standby): ACK / NAK for the T30's MAC.
+ * Returns 1 when the frame was a DHCP reply for the T30. */
+static int dhcp_learn_down(const uint8_t *eth, int len)
+{
+	const uint8_t *v;
+	int b = dhcp_off(eth, len, 67, 68);
+	uint8_t type;
+	uint32_t lease, t1;
+
+	if (!b || eth[b] != 2 || !t30_mac_known || memcmp(eth + b + 28, t30_mac, 6))
+		return 0;
+	if (dhcp_opt(eth, len, b, 53, &v) != 1)
+		return 1;
+	type = v[0];
+	if (st == ST_OFF && get_be32(eth + b + 4) != dh.xid)
+		return 1;		/* not the answer to our request */
+	if (type == 6) {		/* NAK */
+		if (st == ST_OFF) {
+			S.dhcp_nak++;
+			H->log("dhcp: NAK, lease given up until the T30 asks again\n");
+		}
+		dh.valid = 0;
+		dh.next_ms = 0;
+		return 1;
+	}
+	if (type != 5)			/* only ACKs carry the lease */
+		return 1;
+	if (dhcp_opt(eth, len, b, 51, &v) != 4 || dhcp_opt(eth, len, b, 54, &v) < 0)
+		return 1;
+	dhcp_opt(eth, len, b, 51, &v);
+	lease = get_be32(v);
+	dhcp_opt(eth, len, b, 54, &v);
+	memcpy(dh.srv_ip, v, 4);
+	t1 = lease / 2;
+	if (dhcp_opt(eth, len, b, 58, &v) == 4 && get_be32(v) && get_be32(v) < lease)
+		t1 = get_be32(v);
+	if (t1 > BR_DHCP_MAX_T1_S)
+		t1 = BR_DHCP_MAX_T1_S;
+	if (lease < 60 || t1 < 30)	/* nonsense: ignore */
+		return 1;
+	if (lease > 1700000u)		/* keep lease_s * 1000 in 32 bit */
+		lease = 1700000u;
+	memcpy(dh.ip, eth + b + 16, 4);	/* yiaddr */
+	memcpy(dh.srv_mac, eth + 6, 6);
+	dh.lease_s = lease;
+	dh.t1_s = t1;
+	dh.ack_ms = H->millis();
+	dh.valid = 1;
+	dh.next_ms = 0;
+	if (!t30_ip_known || memcmp(t30_ip, dh.ip, 4)) {
+		memcpy(t30_ip, dh.ip, 4);
+		t30_ip_known = 1;
+	}
+	if (st == ST_OFF) {
+		S.dhcp_ack++;
+		H->log("dhcp: renewed %u.%u.%u.%u for %lu s\n", dh.ip[0], dh.ip[1],
+		       dh.ip[2], dh.ip[3], (unsigned long)lease);
+	}
+	return 1;
+}
+
+static uint16_t ip_csum(const uint8_t *p, int n)
+{
+	uint32_t s = 0;
+	int i;
+
+	for (i = 0; i + 1 < n; i += 2)
+		s += p[i] << 8 | p[i + 1];
+	while (s >> 16)
+		s = (s & 0xffff) + (s >> 16);
+	return (uint16_t)~s;
+}
+
+/* build a RENEWING DHCPREQUEST (unicast to the server); returns its length */
+int bridge_dhcp_build(uint8_t *f, int cap)
+{
+	int o, b = 14 + 20 + 8, ulen, iplen;
+	uint16_t c;
+
+	if (!dh.valid || !t30_mac_known || cap < b + 300 + 80)
+		return 0;
+	memset(f, 0, b + 240);
+	memcpy(f, dh.srv_mac, 6);
+	memcpy(f + 6, t30_mac, 6);
+	f[12] = 0x08;
+	/* BOOTP */
+	f[b] = 1;
+	f[b + 1] = 1;
+	f[b + 2] = 6;
+	f[b + 4] = dh.xid >> 24; f[b + 5] = dh.xid >> 16; f[b + 6] = dh.xid >> 8; f[b + 7] = dh.xid;
+	memcpy(f + b + 12, dh.ip, 4);		/* ciaddr */
+	memcpy(f + b + 28, t30_mac, 6);	/* chaddr */
+	f[b + 236] = 0x63; f[b + 237] = 0x82; f[b + 238] = 0x53; f[b + 239] = 0x63;
+	o = b + 240;
+	f[o++] = 53; f[o++] = 1; f[o++] = 3;	/* DHCPREQUEST */
+	if (dh.cid_len) {
+		f[o++] = 61; f[o++] = dh.cid_len;
+		memcpy(f + o, dh.cid, dh.cid_len);
+		o += dh.cid_len;
+	}
+	if (dh.host_len) {
+		f[o++] = 12; f[o++] = dh.host_len;
+		memcpy(f + o, dh.host, dh.host_len);
+		o += dh.host_len;
+	}
+	f[o++] = 55; f[o++] = 4; f[o++] = 1; f[o++] = 3; f[o++] = 6; f[o++] = 51;
+	f[o++] = 255;
+	while (o < b + 300)			/* BOOTP minimum size */
+		f[o++] = 0;
+	ulen = o - (14 + 20);
+	iplen = o - 14;
+	/* IPv4 */
+	f[14] = 0x45;
+	f[16] = iplen >> 8; f[17] = iplen;
+	f[22] = 64;
+	f[23] = 17;
+	memcpy(f + 26, dh.ip, 4);
+	memcpy(f + 30, dh.srv_ip, 4);
+	c = ip_csum(f + 14, 20);
+	f[24] = c >> 8; f[25] = c;
+	/* UDP 68 -> 67, checksum 0 (allowed for IPv4) */
+	f[34] = 0; f[35] = 68; f[36] = 0; f[37] = 67;
+	f[38] = ulen >> 8; f[39] = ulen;
+	return o;
+}
+
+static void dhcp_poll(uint32_t now)
+{
+	uint8_t f[14 + 20 + 8 + 300 + 80];
+	uint32_t age, n;
+
+	if (st != ST_OFF || !dh.valid || !H->wifi_tx)
+		return;
+	age = now - dh.ack_ms;
+	if (age >= dh.lease_s * 1000u) {
+		H->log("dhcp: lease ran out without an answer, giving up\n");
+		dh.valid = 0;
+		return;
+	}
+	if (age < dh.t1_s * 1000u)
+		return;
+	if (dh.next_ms && (int32_t)(now - dh.next_ms) < 0)
+		return;
+	dh.xid = (dh.xid * 1103515245u + 12345u) ^ now ^ get_be32(t30_mac + 2);
+	n = bridge_dhcp_build(f, sizeof(f));
+	if (!n)
+		return;
+	H->wifi_tx(f, n);
+	S.dhcp_req++;
+	dh.next_ms = now + BR_DHCP_RETRY_MS;
+	if (!dh.next_ms)
+		dh.next_ms = 1;
+	H->log("dhcp: renewing %u.%u.%u.%u (T30 asleep, lease age %lu s)\n",
+	       dh.ip[0], dh.ip[1], dh.ip[2], dh.ip[3], (unsigned long)(age / 1000));
+}
+
 /*
  * Standby helpers (T30 off): answer ARP for the T30's IP so it stays
  * reachable, and wake the T30 on a TCP connection attempt to one of its
@@ -1044,6 +1296,8 @@ static void standby_rx(const uint8_t *eth, int len)
 		bridge_wake(BR_WAKE_WLAN);
 		return;
 	}
+	if (dhcp_learn_down(eth, len))
+		return;
 	if (!t30_mac_known || !t30_ip_known || len < 42)
 		return;
 	if (eth[12] == 0x08 && eth[13] == 0x06 && eth[21] == 1 &&
@@ -1077,6 +1331,7 @@ void bridge_wifi_rx(const uint8_t *eth, int len)
 		return;		/* nobody to deliver to */
 	}
 
+	dhcp_learn_down(eth, len);
 	if (len <= 0 || len > SPIF_MAX_PAYLOAD || wq_count == WQ_LEN) {
 		S.wifi_drop++;
 		return;
@@ -1110,6 +1365,8 @@ void bridge_spi_rx(const uint8_t *frame, int len)
 		t30_ip_known = 1;
 		H->log("spi: T30 IP %u.%u.%u.%u\n", t30_ip[0], t30_ip[1], t30_ip[2], t30_ip[3]);
 	}
+	if (type == SPIF_ETH && n > 0)
+		dhcp_learn_up(frame + SPIF_HDR, n);
 	if (type == SPIF_ETH && n > 0 && H->wifi_tx) {
 		S.spi_eth_up++;
 		H->wifi_tx(frame + SPIF_HDR, n);
