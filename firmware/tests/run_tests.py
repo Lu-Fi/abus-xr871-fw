@@ -725,6 +725,11 @@ def test_dhcp(w):
     unit_test(w, "dhcp", "dhcp", "lease learnt, renewed at T1 in standby, NAK/expiry stop")
 
 
+def test_wake(w):
+    """T30 wake sequence and boot check (tests/wake.c)"""
+    unit_test(w, "wake", "wake", "rail before GPIO, no-hello power-cycle, retry limit")
+
+
 def main():
     w = os.path.join(OUT, "t-" + time.strftime("%m%d-%H%M%S"))
     os.makedirs(w)
@@ -733,6 +738,7 @@ def main():
     test_rx_loss(w)
     test_battery(w)
     test_dhcp(w)
+    test_wake(w)
     test_stock(w)
     test_boot_usb(w)
     test_e2e(w)

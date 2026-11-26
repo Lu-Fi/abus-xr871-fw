@@ -98,9 +98,34 @@ static int h_mcu_send(uint8_t cmd, uint8_t val)
 	return r == 1 ? 0 : -1;
 }
 
+/* the UART1 link pins while the T30 is off: inputs with pull-down, so the
+ * idle-high TX and the RX pull-up do not back-power the T30 (see
+ * spis_park); restored after the power pin goes high */
+static void t30_uart_pins(int on)
+{
+	GPIO_InitParam tx = { GPIOA_P17_F5_UART1_TX, GPIO_DRIVING_LEVEL_1, GPIO_PULL_UP };
+	GPIO_InitParam rx = { GPIOA_P18_F5_UART1_RX, GPIO_DRIVING_LEVEL_1, GPIO_PULL_UP };
+	GPIO_InitParam in = { GPIOx_Pn_F0_INPUT, GPIO_DRIVING_LEVEL_1, GPIO_PULL_DOWN };
+
+	HAL_GPIO_Init(GPIO_PORT_A, GPIO_PIN_17, on ? &tx : &in);
+	HAL_GPIO_Init(GPIO_PORT_A, GPIO_PIN_18, on ? &rx : &in);
+}
+
 static void h_t30_power(int on)
 {
-	HAL_GPIO_WritePin(GPIO_PORT_A, T30_PWR_PIN, on ? GPIO_PIN_HIGH : GPIO_PIN_LOW);
+	if (!on) {
+		HAL_GPIO_WritePin(GPIO_PORT_A, T30_PWR_PIN, GPIO_PIN_LOW);
+		t30_uart_pins(0);
+#ifdef BR_WIFI
+		spis_park(1);
+#endif
+		return;
+	}
+	HAL_GPIO_WritePin(GPIO_PORT_A, T30_PWR_PIN, GPIO_PIN_HIGH);
+	t30_uart_pins(1);
+#ifdef BR_WIFI
+	spis_park(0);
+#endif
 }
 
 static uint32_t h_millis(void)

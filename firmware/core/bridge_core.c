@@ -28,6 +28,9 @@ static int st;
 static uint32_t grace_until, wake_at, pending_wake;
 static uint32_t reset_until, last_reset_ms, stall_ref_ms, stall_frames;
 static int auto_reset = 1;
+static int rail_wait;		/* reset_until is a wake delay, not a reset */
+static uint32_t boot_hello;	/* S.t30_hello at the last power-on */
+static int boot_retries;	/* power-cycles for a missing hello */
 static uint32_t probe_until;
 static int probe_pin = -1;
 static uint8_t t30_mac[6];
@@ -447,6 +450,7 @@ static void t30_handle(const uint8_t *b, int len)
 	switch (cmd) {
 	case T30_HELLO:
 		S.t30_hello++;
+		boot_retries = 0;
 		fwd = 0;	/* a (re)started T30 application opts in again */
 		S.led_req = 0;
 		H->log("t30: hello (+%lu ms after power-on)\n",
@@ -778,7 +782,10 @@ void bridge_mcu_rx(uint8_t cmd, uint8_t val)
 				t30_send(XR_PIR, val, NULL, 0);
 			bridge_wake(BR_WAKE_PIR);
 		}
-		else if (cmd == MCU_EV_KEY1 || cmd == MCU_EV_KEY2)
+		else if (cmd == MCU_EV_KEY1 || cmd == MCU_EV_KEY2 ||
+			 cmd == MCU_EV_KEYPRESS)
+			/* 0x06 = short press (stock DOOR_KEY wakes the T30;
+			 * 2026-11-26 camera 3: arrives without a reboot) */
 			bridge_wake(BR_WAKE_KEY);
 		return;
 	}
@@ -829,6 +836,7 @@ void bridge_init(const struct bridge_hal *hal, uint32_t wake_source)
 
 	H->t30_power(1);
 	S.t30_power_on_ms = H->millis();
+	boot_hello = S.t30_hello;
 	S.t30_on = 1;
 	S.last_wake = wake_source;
 	st = ST_ON;
@@ -843,6 +851,8 @@ static void t30_off(void)
 	S.led_req = 0;
 	H->t30_power(0);
 	mcu_send(MCU_DSP_POWER, 0x09);
+	reset_until = 0;
+	rail_wait = 0;
 	st = ST_OFF;
 	fwd = 0;
 	S.t30_on = 0;
@@ -880,12 +890,20 @@ void bridge_wake(uint32_t reason)
 	S.wakes++;
 	S.last_wake = reason;
 	S.t30_hb = 0;
-	S.t30_power_on_ms = H->millis();
-	H->t30_power(1);
 	S.t30_on = 1;
 	st = ST_ON;
+	/* 2026-11-26 camera 3: GPIO high together with {0x05,0x07} left the
+	 * T30 dead after a standby (no SPI frame until the 180 s stall reset,
+	 * whose 3 s off/on always booted it). Ask the MCU for the DSP rail
+	 * first, keep the T30 off and power it from bridge_poll later. */
 	mcu_send(MCU_DSP_POWER, 0x07);
-	H->log("t30: woken, reason 0x%03lx\n", (unsigned long)reason);
+	H->t30_power(0);
+	rail_wait = 1;
+	reset_until = H->millis() + BR_WAKE_RAIL_MS;
+	if (!reset_until)
+		reset_until = 1;
+	H->log("t30: woken, reason 0x%03lx, power on in %u ms\n",
+	       (unsigned long)reason, (unsigned)BR_WAKE_RAIL_MS);
 }
 
 void bridge_t30_auto(int on)
@@ -894,21 +912,30 @@ void bridge_t30_auto(int on)
 	H->log("t30: automatic reset %s\n", on ? "on" : "off");
 }
 
-void bridge_t30_reset(const char *why)
+static void t30_cycle(const char *why, uint32_t off_ms)
 {
 	uint32_t now = H->millis();
 
 	if (st != ST_ON || reset_until)
 		return;
-	H->log("t30: power-cycle (%s)\n", why);
+	H->log("t30: power-cycle (%s), off %lu ms\n", why, (unsigned long)off_ms);
 	H->t30_power(0);
-	reset_until = now + BR_RESET_OFF_MS;
+	reset_until = now + off_ms;
 	if (!reset_until)
 		reset_until = 1;
 	last_reset_ms = now;
 	S.t30_resets++;
 	wq_clear();
 }
+
+void bridge_t30_reset(const char *why)
+{
+	t30_cycle(why, BR_RESET_OFF_MS);
+}
+
+/* boot retries keep the T30 off longer each time: a quick re-power did not
+ * reset it on camera 3 (2026-11-26), one after ~6 min off always did */
+static const uint32_t boot_off_ms[BR_BOOT_RETRIES] = BR_BOOT_OFF_MS;
 
 /* T30 on and past boot, but no SPI traffic or no heartbeat for too long */
 static void t30_watch(uint32_t now)
@@ -922,7 +949,20 @@ static void t30_watch(uint32_t now)
 		stall_frames = S.spi_frames;
 		stall_ref_ms = now;
 	}
-	if (!auto_reset || now - S.t30_power_on_ms < BR_STALL_MS)
+	if (!auto_reset)
+		return;
+	/* no hello after a power-on: the T30 did not boot; retry quickly and
+	 * outside the holdoff, a few times (a T30 without xr871d never says
+	 * hello, so give up after BR_BOOT_RETRIES and leave it to the stall
+	 * check below) */
+	if (S.t30_hello == boot_hello && boot_retries < BR_BOOT_RETRIES &&
+	    now - S.t30_power_on_ms >= BR_BOOT_MS) {
+		last_reset_ms = 0;
+		t30_cycle("no hello after power-on", boot_off_ms[boot_retries]);
+		boot_retries++;
+		return;
+	}
+	if (now - S.t30_power_on_ms < BR_STALL_MS)
 		return;
 	if (last_reset_ms && now - last_reset_ms < BR_RESET_HOLDOFF_MS)
 		return;
@@ -942,8 +982,11 @@ void bridge_poll(void)
 		reset_until = 0;
 		S.t30_hb = 0;
 		S.t30_power_on_ms = now;
+		boot_hello = S.t30_hello;
 		H->t30_power(1);
-		H->log("t30: powered on again after reset\n");
+		H->log(rail_wait ? "t30: powered on (wake)\n" :
+		       "t30: powered on again after reset\n");
+		rail_wait = 0;
 	}
 	t30_watch(now);
 

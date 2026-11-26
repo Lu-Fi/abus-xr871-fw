@@ -195,6 +195,36 @@ static void pins_init(void)
 	}
 }
 
+/* T30 off: no XR871 pin may drive (or pull up) a line into the unpowered
+ * T30, or it is back-powered through its protection diodes and does not
+ * reset on the next power-on (2026-11-26 camera 3: the ready line PA15 was
+ * high in standby; a T30 re-powered within ~6 min of a standby never
+ * booted). park = 1: SPI pins and the ready line to inputs with pull-down,
+ * park = 0: SPI function back, ready line at the SPI thread's level. */
+void spis_park(int park)
+{
+	static const GPIO_Pin sp[] = { GPIO_PIN_19, GPIO_PIN_20, GPIO_PIN_21, GPIO_PIN_22 };
+	GPIO_InitParam in = { GPIOx_Pn_F0_INPUT, GPIO_DRIVING_LEVEL_1, GPIO_PULL_DOWN };
+	int pin = ready_pin;
+	unsigned i;
+
+	if (park) {
+		for (i = 0; i < sizeof(sp) / sizeof(sp[0]); i++)
+			HAL_GPIO_Init(GPIO_PORT_A, sp[i], &in);
+		if (pin >= 0) {
+			ready_suspended = pin;
+			HAL_GPIO_Init(GPIO_PORT_A, (GPIO_Pin)pin, &in);
+		}
+		return;
+	}
+	pins_init();
+	if (pin >= 0) {
+		if (ready_suspended == pin)
+			ready_suspended = -1;
+		pin_out(pin, ready_level);
+	}
+}
+
 static int dma_init(void)
 {
 	DMA_ChannelInitParam t, r;

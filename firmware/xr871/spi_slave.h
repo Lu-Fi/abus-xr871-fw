@@ -8,6 +8,7 @@ int spis_start(OS_Mutex_t *core_lock);	/* core calls happen under core_lock */
 int spis_pin_allowed(int pin);
 int spis_probe_pin(int pin, int level);
 int spis_set_ready_pin(int pin);
+void spis_park(int park);	/* T30 off: release all lines into the T30 */
 int spis_ready_pin(void);	/* current ready pin (GPIO test refuses it) */
 void spis_stats(uint32_t *xfer, uint32_t *aborted);
 void spis_diag(void);

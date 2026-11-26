@@ -161,6 +161,7 @@ struct bridge_hal {
 #define MCU_Q_VERSION 0x23
 #define MCU_DSP_POWER 0x05	/* value 0x07 = on, 0x09 = off */
 #define MCU_EV_PIR 0x0d
+#define MCU_EV_KEYPRESS 0x06	/* short press of the rear key, value = MCU version */
 #define MCU_EV_KEY1 0x12
 #define MCU_EV_KEY2 0x13
 #define MCU_EV_USB 0x0c		/* val != 0: USB power in (stock "USB INSERT") */
@@ -252,6 +253,14 @@ void bridge_wake(uint32_t reason);	/* power the T30 up (no-op if on) */
 #define BR_RESET_OFF_MS 3000
 #define BR_STALL_MS 180000
 #define BR_RESET_HOLDOFF_MS 600000
+/* wake: MCU DSP rail request ({0x05,0x07}) this long before the T30 power
+ * GPIO goes high; boot check: no T30 hello within BR_BOOT_MS of a power-on
+ * = power-cycle, at most BR_BOOT_RETRIES times in a row (not subject to the
+ * holdoff) */
+#define BR_WAKE_RAIL_MS 500
+#define BR_BOOT_MS 20000
+#define BR_BOOT_RETRIES 5
+#define BR_BOOT_OFF_MS { 3000, 10000, 30000, 60000, 120000 }	/* per retry */
 void bridge_t30_reset(const char *why);
 void bridge_t30_auto(int on);
 
